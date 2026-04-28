@@ -78,6 +78,9 @@
 | [Network resilience + retry](on-hold/network-resilience-retry.md) | A7 | HttpFetcher に retry layer、parse error 露出を消す |
 | [Cache management](on-hold/cache-management.md) | G2 / G3 | `qusp cache clean / prune --ci`、reachable-set GC |
 | [Force reinstall flag](on-hold/force-reinstall.md) | N1 | `qusp install --reinstall` (`-r`, `-f`) |
+| [`--help` richness + pager](on-hold/help-richness-and-pager.md) | Q1 / Q2 / Z1 | clap long help + `[env: QUSP_*=]` + `--no-pager` |
+| [Machine-readable JSON output](on-hold/machine-readable-output.md) | R1 | `--output-format json` 全 list / current / doctor 系で |
+| [Verbose `-v` + env var contract](on-hold/verbose-flag.md) | Y1 / S1 | `tracing` 導入 + `QUSP_*` env vars exposed in `--help` |
 
 ### Medium priority (audit 🟡 → ✅)
 
@@ -94,6 +97,13 @@
 | 項目 | audit row | 説明 |
 |---|---|---|
 | [shellenv auto-eval](on-hold/shellenv-auto-eval.md) | D6 延長 | rcfile 編集ゼロ経路 (現状 D 案 = no-op で行く前提) |
+
+### Phase 5 外 (correctness バグ、independent fix)
+
+| 項目 | audit row | 説明 |
+|---|---|---|
+| [Concurrent install safety (file lock)](on-hold/concurrent-install-safety.md) | W1 | 並列 `qusp install` の race 防止、`fs2::FileExt` ベース |
+| (F4 lockfile on failed install) | F4 | A7 と同じ install-path hardening、独立 doc 不要 |
 
 ## On Hold — Phase 6: Reproducibility & Nix Bridge (3.x)
 
