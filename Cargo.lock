@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "qusp-cli"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "anyv-core",
@@ -1091,12 +1091,14 @@ dependencies = [
  "indicatif",
  "qusp-core",
  "reqwest",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
 [[package]]
 name = "qusp-core"
-version = "0.24.0"
+version = "0.25.0"
 dependencies = [
  "anyhow",
  "anyv-core",

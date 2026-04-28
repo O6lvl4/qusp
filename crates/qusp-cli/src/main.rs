@@ -1,4 +1,4 @@
-//! qusp CLI — v0.24.0.
+//! qusp CLI — v0.25.0.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
@@ -26,7 +26,10 @@ use qusp_core::backends;
 use qusp_core::registry::BackendRegistry;
 use qusp_core::{lock, manifest, paths};
 
+mod output;
 mod script;
+
+use output::OutputFormat;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -38,6 +41,13 @@ mod script;
 struct Cli {
     #[arg(short = 'q', long = "quiet", global = true)]
     quiet: bool,
+    /// Output format. `text` (default, human-readable, colored) or
+    /// `json` (machine-readable, schema in docs/JSON_SCHEMA.md).
+    /// Side-effect commands (`install`, `run`, `x`, `sync`, ...) ignore
+    /// this flag — only introspection commands (`backends`, `list`,
+    /// `current`, `doctor`, `dir`, `outdated`) honor it.
+    #[arg(long = "output-format", value_enum, default_value_t = OutputFormat::Text, global = true)]
+    output_format: OutputFormat,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -197,9 +207,10 @@ async fn run(cli: Cli) -> Result<ExitCode> {
     let paths = paths::discover()?;
     paths.ensure_dirs()?;
     let registry = build_registry();
+    let fmt = cli.output_format;
 
     match cli.cmd {
-        Cmd::Backends => cmd_backends(&registry),
+        Cmd::Backends => cmd_backends(&registry, fmt),
         Cmd::Install { lang, version } => cmd_install(&registry, &paths, lang, version).await,
         Cmd::Sync { frozen } => cmd_sync(&registry, &paths, frozen).await,
         Cmd::Add { target } => match target {
@@ -210,13 +221,13 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Shellenv { shell, root } => cmd_shellenv(&registry, &paths, shell, root),
         Cmd::Hook { shell } => cmd_hook(shell),
         Cmd::Init { langs, force } => cmd_init(&registry, langs, force),
-        Cmd::Outdated => cmd_outdated(&registry).await,
+        Cmd::Outdated => cmd_outdated(&registry, fmt).await,
         Cmd::SelfUpdate { check } => cmd_self_update(check).await,
-        Cmd::List { lang, remote } => cmd_list(&registry, &paths, &lang, remote).await,
-        Cmd::Current { lang } => cmd_current(&registry, lang.as_deref()).await,
+        Cmd::List { lang, remote } => cmd_list(&registry, &paths, &lang, remote, fmt).await,
+        Cmd::Current { lang } => cmd_current(&registry, lang.as_deref(), fmt).await,
         Cmd::Tree => cmd_tree(&registry, &paths).await,
-        Cmd::Doctor => cmd_doctor(&registry, &paths),
-        Cmd::Dir { kind } => cmd_dir(&paths, kind),
+        Cmd::Doctor => cmd_doctor(&registry, &paths, fmt),
+        Cmd::Dir { kind } => cmd_dir(&paths, kind, fmt),
         Cmd::Completions { shell } => cmd_completions(shell),
     }
 }
@@ -244,11 +255,14 @@ fn build_registry() -> BackendRegistry {
     r
 }
 
-fn cmd_backends(r: &BackendRegistry) -> Result<ExitCode> {
-    println!("{}", color_bold("qusp backends"));
-    for id in r.ids() {
-        println!("  {}", color_cyan(id));
-    }
+fn cmd_backends(r: &BackendRegistry, fmt: OutputFormat) -> Result<ExitCode> {
+    let out = output::BackendsOutput {
+        backends: r
+            .ids()
+            .map(|id| output::BackendEntry { id: id.to_string() })
+            .collect(),
+    };
+    fmt.emit(&out);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -971,35 +985,48 @@ fn cmd_init(r: &BackendRegistry, langs: Option<Vec<String>>, force: bool) -> Res
     Ok(ExitCode::SUCCESS)
 }
 
-async fn cmd_outdated(r: &BackendRegistry) -> Result<ExitCode> {
+async fn cmd_outdated(r: &BackendRegistry, fmt: OutputFormat) -> Result<ExitCode> {
     let cwd = std::env::current_dir()?;
     let root = manifest::find_root(&cwd)
         .ok_or_else(|| anyhow!("no qusp.toml found above {}", cwd.display()))?;
     let lock = lock::Lock::load(&root).unwrap_or_else(|_| lock::Lock::empty());
     if lock.backends.is_empty() {
-        say!(
-            "{}",
-            dim("(qusp.lock has no toolchain entries — run `qusp sync` first)")
-        );
+        // Empty lock — emit empty entries; text mode preserves the
+        // existing "(qusp.lock has no toolchain entries...)" hint.
+        if matches!(fmt, OutputFormat::Text) {
+            say!(
+                "{}",
+                dim("(qusp.lock has no toolchain entries — run `qusp sync` first)")
+            );
+        } else {
+            fmt.emit(&output::OutdatedOutput { entries: vec![] });
+        }
         return Ok(ExitCode::SUCCESS);
     }
     let client = http()?;
-    let mut hits = 0usize;
+    let mut entries: Vec<output::OutdatedEntry> = Vec::new();
     for (lang, entry) in &lock.backends {
         let Some(backend) = r.get(lang) else { continue };
         if entry.version.is_empty() {
             continue;
         }
-        let pb = spinner(format!("checking {lang}"));
+        let pb = if matches!(fmt, OutputFormat::Text) {
+            Some(spinner(format!("checking {lang}")))
+        } else {
+            None
+        };
         let remote = backend.list_remote(&client).await;
-        pb.finish_and_clear();
+        if let Some(pb) = pb {
+            pb.finish_and_clear();
+        }
+        let pinned = entry.version.trim().to_string();
         let Ok(remote) = remote else {
-            println!(
-                " {} {}: {}",
-                color_yellow("?"),
-                color_cyan(lang),
-                dim("could not query upstream")
-            );
+            entries.push(output::OutdatedEntry {
+                backend: lang.clone(),
+                status: output::OutdatedStatus::Unknown,
+                current: pinned,
+                latest: None,
+            });
             continue;
         };
         // First entry is the newest by convention. Strip annotations
@@ -1013,36 +1040,19 @@ async fn cmd_outdated(r: &BackendRegistry) -> Result<ExitCode> {
         if latest.is_empty() {
             continue;
         }
-        let pinned = entry.version.trim();
-        if version_loose_eq(pinned, &latest) {
-            println!(
-                " {} {} {}",
-                color_green("="),
-                color_cyan(lang),
-                color_bold(pinned),
-            );
+        let status = if version_loose_eq(&pinned, &latest) {
+            output::OutdatedStatus::UpToDate
         } else {
-            hits += 1;
-            println!(
-                " {} {} {} → {}",
-                color_yellow("↑"),
-                color_cyan(lang),
-                color_bold(pinned),
-                color_bold(&latest),
-            );
-        }
+            output::OutdatedStatus::Outdated
+        };
+        entries.push(output::OutdatedEntry {
+            backend: lang.clone(),
+            status,
+            current: pinned,
+            latest: Some(latest),
+        });
     }
-    if hits == 0 {
-        say!("\n{} all toolchains at latest", success_mark());
-    } else {
-        say!(
-            "\n{} {} toolchain{} have newer upstream versions. \
-             Bump qusp.toml and run `qusp sync` to apply.",
-            color_yellow("!"),
-            hits,
-            if hits == 1 { "" } else { "s" }
-        );
-    }
+    fmt.emit(&output::OutdatedOutput { entries });
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1107,29 +1117,40 @@ async fn cmd_list(
     paths: &qusp_core::Paths,
     lang: &str,
     remote: bool,
+    fmt: OutputFormat,
 ) -> Result<ExitCode> {
     let backend = r
         .get(lang)
         .ok_or_else(|| anyhow!("unknown language: {lang}"))?;
-    if remote {
+    let (scope, versions) = if remote {
         let client = http()?;
-        for v in backend.list_remote(&client).await? {
-            println!("{v}");
-        }
+        (output::ListScope::Remote, backend.list_remote(&client).await?)
     } else {
-        for v in backend.list_installed(paths)? {
-            println!("{v}");
-        }
-    }
+        (output::ListScope::Installed, backend.list_installed(paths)?)
+    };
+    let out = output::ListOutput {
+        lang: lang.to_string(),
+        scope,
+        versions: versions
+            .into_iter()
+            .map(|version| output::VersionEntry { version })
+            .collect(),
+    };
+    fmt.emit(&out);
     Ok(ExitCode::SUCCESS)
 }
 
-async fn cmd_current(r: &BackendRegistry, lang: Option<&str>) -> Result<ExitCode> {
+async fn cmd_current(
+    r: &BackendRegistry,
+    lang: Option<&str>,
+    fmt: OutputFormat,
+) -> Result<ExitCode> {
     let cwd = std::env::current_dir()?;
     let langs: Vec<&str> = match lang {
         Some(l) => vec![l],
         None => r.ids().collect(),
     };
+    let mut entries = Vec::new();
     for id in langs {
         let backend = match r.get(id) {
             Some(b) => b,
@@ -1138,16 +1159,23 @@ async fn cmd_current(r: &BackendRegistry, lang: Option<&str>) -> Result<ExitCode
                 continue;
             }
         };
-        match backend.detect_version(&cwd).await? {
-            Some(d) => println!(
-                "{:<10} {} {}",
-                color_cyan(id),
-                color_bold(&d.version),
-                dim(&format!("(from {})", d.source))
-            ),
-            None => println!("{:<10} {}", color_cyan(id), dim("(none)")),
-        }
+        let entry = match backend.detect_version(&cwd).await? {
+            Some(d) => output::CurrentEntry {
+                backend: id.to_string(),
+                version: Some(d.version),
+                source: Some(d.source),
+                source_path: Some(output::path_to_string(&d.origin)),
+            },
+            None => output::CurrentEntry {
+                backend: id.to_string(),
+                version: None,
+                source: None,
+                source_path: None,
+            },
+        };
+        entries.push(entry);
     }
+    fmt.emit(&output::CurrentOutput { backends: entries });
     Ok(ExitCode::SUCCESS)
 }
 
@@ -1208,31 +1236,42 @@ async fn cmd_tree(r: &BackendRegistry, paths: &qusp_core::Paths) -> Result<ExitC
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_doctor(r: &BackendRegistry, paths: &qusp_core::Paths) -> Result<ExitCode> {
-    println!("{}", color_bold("qusp doctor"));
-    println!("  data dir   : {}", paths.data.display());
-    println!("  config dir : {}", paths.config.display());
-    println!("  cache dir  : {}", paths.cache.display());
-    println!("  backends   : {}", r.ids().collect::<Vec<_>>().join(", "));
-    for (id, backend) in r.iter() {
-        let count = backend.list_installed(paths).map(|v| v.len()).unwrap_or(0);
-        let mark = if count > 0 {
-            color_green(&format!("{count} installed"))
-        } else {
-            color_yellow("none installed yet").to_string()
-        };
-        println!("  {:<10} : {mark}", color_cyan(id));
-    }
+fn cmd_doctor(
+    r: &BackendRegistry,
+    paths: &qusp_core::Paths,
+    fmt: OutputFormat,
+) -> Result<ExitCode> {
+    let backends: Vec<output::DoctorBackend> = r
+        .iter()
+        .map(|(id, backend)| output::DoctorBackend {
+            id: id.to_string(),
+            installed_count: backend.list_installed(paths).map(|v| v.len()).unwrap_or(0),
+        })
+        .collect();
+    let out = output::DoctorOutput {
+        qusp_version: env!("CARGO_PKG_VERSION").to_string(),
+        paths: output::DoctorPaths {
+            data: output::path_to_string(&paths.data),
+            config: output::path_to_string(&paths.config),
+            cache: output::path_to_string(&paths.cache),
+        },
+        backends,
+    };
+    fmt.emit(&out);
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_dir(paths: &qusp_core::Paths, kind: DirKind) -> Result<ExitCode> {
+fn cmd_dir(paths: &qusp_core::Paths, kind: DirKind, fmt: OutputFormat) -> Result<ExitCode> {
     let p = match kind {
         DirKind::Data => paths.data.clone(),
         DirKind::Cache => paths.cache.clone(),
         DirKind::Config => paths.config.clone(),
     };
-    println!("{}", p.display());
+    let out = output::DirOutput {
+        kind: format!("{kind:?}").to_lowercase(),
+        path: output::path_to_string(&p),
+    };
+    fmt.emit(&out);
     Ok(ExitCode::SUCCESS)
 }
 
