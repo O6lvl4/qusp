@@ -1,6 +1,28 @@
 # Groovy
 
-**優先度:** Phase 4 (2.x+)
+**Shipped:** v0.18.0
+**Tag:** v0.18.0
+**Phase 4 第四弾。Single-binary 系・Apache zip + cross-backend [java]。**
+
+## 出荷時の落とし穴
+
+`bin/startGroovy` は Darwin ブロックで
+`JAVA_OPTS="$JAVA_OPTS -Xdock:name=$GROOVY_APP_NAME -Xdock:icon=$GROOVY_HOME/lib/groovy.icns"`
+を追記してから後段で `exec "$JAVACMD" $JAVA_OPTS \ ...` と
+**unquoted** で展開する。`$GROOVY_HOME` が macOS 既定の
+`~/Library/Application Support/dev.O6lvl4.qusp` 配下のときに
+"Application Support" のスペースで word-split が起き、
+`Support/.../lib/groovy.icns` が main-class として Java に渡されて
+`ClassNotFoundException: Support.dev.O6lvl4.qusp.groovy.4.0.22.lib.groovy.icns`
+を出して死ぬ。
+
+`install` 後に `bin/startGroovy` の
+` -Xdock:icon=$GROOVY_HOME/lib/groovy.icns` の部分を削除する
+in-place パッチで回避。Dock のアイコンバッジは捨てて、
+`groovy --version` が動くほうを取る。
+
+(以下、設計時の元メモ)
+
 **難易度:** 低 (Apache 公式 zip、シンプル)
 **前提:** Java backend
 
