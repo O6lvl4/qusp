@@ -233,7 +233,12 @@ impl Backend for DenoBackend {
         let mut out = Vec::new();
         for e in std::fs::read_dir(&dir)? {
             let e = e?;
-            out.push(e.file_name().to_string_lossy().into_owned());
+            let name = e.file_name().to_string_lossy().into_owned();
+            // Skip the install lock files written by `StoreLock::acquire`.
+            if name.ends_with(".qusp-lock") {
+                continue;
+            }
+            out.push(name);
         }
         out.sort_by(|a, b| version_cmp(b, a));
         Ok(out)

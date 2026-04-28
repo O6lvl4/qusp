@@ -220,7 +220,7 @@ impl Backend for LuaBackend {
         // path with no spaces (`std::env::temp_dir()` on macOS lives
         // under `/var/folders/...` — guaranteed space-free) and then
         // relocate the finished prefix into our store after the build.
-        let staging_root = mktemp_no_space("qusp-lua")?;
+        let staging_root = crate::effects::mktemp_no_space("qusp-lua")?;
         let staging = staging_root.join("prefix");
         let src_for_blocking = src_dir.clone();
         let staging_for_blocking = staging.clone();
@@ -253,7 +253,7 @@ impl Backend for LuaBackend {
             anyv_core::paths::ensure_dir(parent)?;
         }
         if let Err(_) = std::fs::rename(&staging, &prefix) {
-            copy_tree(&staging, &prefix)
+            crate::effects::copy_tree(&staging, &prefix)
                 .with_context(|| format!("copy {} → {}", staging.display(), prefix.display()))?;
         }
         let _ = std::fs::remove_dir_all(&staging_root);
@@ -294,7 +294,12 @@ impl Backend for LuaBackend {
         let mut out = Vec::new();
         for e in std::fs::read_dir(&dir)? {
             let e = e?;
-            out.push(e.file_name().to_string_lossy().into_owned());
+            let name = e.file_name().to_string_lossy().into_owned();
+            // Skip the install lock files written by `StoreLock::acquire`.
+            if name.ends_with(".qusp-lock") {
+                continue;
+            }
+            out.push(name);
         }
         out.sort_by(|a, b| version_cmp(b, a));
         Ok(out)
@@ -331,47 +336,6 @@ impl Backend for LuaBackend {
             env,
         })
     }
-}
-
-/// Create a fresh temp dir under `std::env::temp_dir()` (which on
-/// macOS resolves to `/var/folders/...`, guaranteed space-free) using
-/// the process pid + a few `SystemTime` nanos so concurrent qusp
-/// installs don't collide. Returns the directory; caller cleans up.
-fn mktemp_no_space(label: &str) -> Result<PathBuf> {
-    let base = std::env::temp_dir();
-    let pid = std::process::id();
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    let dir = base.join(format!("{label}-{pid}-{nanos}"));
-    anyv_core::paths::ensure_dir(&dir)?;
-    Ok(dir)
-}
-
-/// Recursive directory copy preserving file modes. Used as the
-/// cross-filesystem fallback when `rename` can't move a tree.
-fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
-    anyv_core::paths::ensure_dir(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        let ty = entry.file_type()?;
-        if ty.is_dir() {
-            copy_tree(&from, &to)?;
-        } else if ty.is_symlink() {
-            #[cfg(unix)]
-            {
-                let target = std::fs::read_link(&from)?;
-                std::os::unix::fs::symlink(&target, &to).ok();
-            }
-        } else {
-            std::fs::copy(&from, &to)
-                .with_context(|| format!("copy file {} → {}", from.display(), to.display()))?;
-        }
-    }
-    Ok(())
 }
 
 fn run_lua_build(src_dir: &Path, prefix: &Path, plat: &str) -> Result<()> {

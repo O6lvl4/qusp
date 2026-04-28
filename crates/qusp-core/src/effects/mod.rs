@@ -17,7 +17,9 @@
 pub mod http;
 pub mod install_lock;
 pub mod progress;
+pub mod space_trap;
 
 pub use http::{HttpFetcher, LiveHttp};
 pub use install_lock::{atomic_symlink_swap, lock_path_for, StoreLock};
 pub use progress::{run_with_spinner, LiveProgress, NoopProgress, ProgressReporter, ProgressTask};
+pub use space_trap::{copy_tree, mktemp_no_space, no_space_store_root, shell_single_quote};

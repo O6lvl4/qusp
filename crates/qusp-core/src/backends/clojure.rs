@@ -204,8 +204,8 @@ impl Backend for ClojureBackend {
         // so the resulting shell line is `install_dir='<path>'`,
         // which is safe for any character except `'` itself —
         // qusp data paths don't contain single quotes by construction.
-        let lib_dir_quoted = shell_single_quote(&lib_dir.to_string_lossy());
-        let bin_dir_quoted = shell_single_quote(&bin_dir.to_string_lossy());
+        let lib_dir_quoted = crate::effects::shell_single_quote(&lib_dir.to_string_lossy());
+        let bin_dir_quoted = crate::effects::shell_single_quote(&bin_dir.to_string_lossy());
         let clojure_src = std::fs::read_to_string(stage.join("clojure"))
             .context("read clojure-tools/clojure")?;
         let clj_src =
@@ -272,7 +272,12 @@ impl Backend for ClojureBackend {
         let mut out = Vec::new();
         for e in std::fs::read_dir(&dir)? {
             let e = e?;
-            out.push(e.file_name().to_string_lossy().into_owned());
+            let name = e.file_name().to_string_lossy().into_owned();
+            // Skip the install lock files written by `StoreLock::acquire`.
+            if name.ends_with(".qusp-lock") {
+                continue;
+            }
+            out.push(name);
         }
         out.sort_by(|a, b| version_cmp(b, a));
         Ok(out)
@@ -318,24 +323,6 @@ fn parse_sha256_sidecar(s: &str) -> Option<String> {
     s.split_whitespace().next().map(|x| x.to_string())
 }
 
-/// Wrap a path in shell single-quotes, escaping any embedded single
-/// quotes via the standard `'\''` close-escape-reopen idiom. The
-/// result is a single token safe to splice into a POSIX-shell
-/// assignment like `var='<value>'`.
-fn shell_single_quote(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    out.push('\'');
-    for ch in s.chars() {
-        if ch == '\'' {
-            out.push_str("'\\''");
-        } else {
-            out.push(ch);
-        }
-    }
-    out.push('\'');
-    out
-}
-
 /// Clojure CLI versions are 4-segment Maven-style strings like
 /// `1.12.4.1618` (the trailing chunk is a build number). Compare as a
 /// plain `(maj, min, patch, build)` tuple.
@@ -371,20 +358,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn shell_single_quote_handles_application_support_path() {
-        assert_eq!(
-            shell_single_quote(
-                "/Users/o6lvl4/Library/Application Support/dev.O6lvl4.qusp/store/abc/prefix/lib/clojure"
-            ),
-            "'/Users/o6lvl4/Library/Application Support/dev.O6lvl4.qusp/store/abc/prefix/lib/clojure'"
-        );
-    }
-
-    #[test]
-    fn shell_single_quote_escapes_embedded_apostrophe() {
-        assert_eq!(shell_single_quote("a'b"), "'a'\\''b'");
-    }
+    // shell_single_quote tests moved to crates/qusp-core/src/effects/space_trap.rs
+    // when the helper was consolidated in v0.28.1.
 
     #[test]
     fn version_cmp_orders_clojure_4_segment() {

@@ -67,43 +67,10 @@ fn haskell_root(p: &AnyvPaths, ghc_version: &str) -> PathBuf {
     p.data.join("haskell").join(ghc_version)
 }
 
-/// No-space sibling store specifically for ghcup's `--prefix`. Why:
-/// GHC's `./configure` (autoconf-generated) word-splits an unquoted
-/// `--prefix=/foo/Application Support/bar` and bombs at install time.
-/// Lua's stage-then-move pattern does not apply — GHC bakes the
-/// prefix path into wrapper scripts and `package.conf.d/*.conf`, so
-/// post-install relocation produces a broken compiler. The cleanest
-/// answer is to install at a path that is space-free *up front*.
-///
-/// Linux's `~/.local/share/qusp` is already space-free, so we only
-/// divert macOS. The store lives under `$HOME/.qusp/haskell-store/`
-/// — qusp-namespaced, persistent (not Caches, which macOS purges),
-/// no-space by construction. If `$HOME` itself contains a space
-/// (highly unusual for technical macOS users) we still bail with a
-/// clear error rather than silently breaking GHC.
-fn haskell_store_root() -> Result<PathBuf> {
-    if cfg!(target_os = "macos") {
-        let home = std::env::var_os("HOME")
-            .ok_or_else(|| anyhow!("HOME not set; required for Haskell store on macOS"))?;
-        let path = PathBuf::from(home).join(".qusp").join("haskell-store");
-        if path.to_string_lossy().contains(' ') {
-            bail!(
-                "Haskell store path {} contains a space — GHC's configure cannot \
-                 handle space-containing prefixes. Move your $HOME or set a \
-                 space-free path.",
-                path.display()
-            );
-        }
-        anyv_core::paths::ensure_dir(&path)?;
-        Ok(path)
-    } else {
-        // Linux/BSD: qusp's normal data path is space-free already.
-        let p = paths()?;
-        let path = p.store();
-        anyv_core::paths::ensure_dir(&path)?;
-        Ok(path)
-    }
-}
+// haskell_store_root was generalised in v0.28.1 to
+// `crate::effects::no_space_store_root("haskell")` — see
+// `effects/space_trap.rs` for the documented rationale (Pattern 3:
+// up-front no-space install root for autotools-style configures).
 
 fn ghcup_triple() -> Option<&'static str> {
     Some(match (std::env::consts::OS, std::env::consts::ARCH) {
@@ -217,7 +184,8 @@ impl Backend for HaskellBackend {
         // not the usual `~/Library/Application Support/...` qusp data
         // root, because GHC's autoconf-generated `./configure` cannot
         // handle a space in the install prefix. See `haskell_store_root`.
-        let store_dir = haskell_store_root()?.join(format!("ghcup-{}", &actual[..16]));
+        let store_dir = crate::effects::no_space_store_root("haskell")?
+            .join(format!("ghcup-{}", &actual[..16]));
         let bin_dir = store_dir.join("bin");
         let ghcup_bin = bin_dir.join("ghcup");
         if !ghcup_bin.exists() {
@@ -304,7 +272,12 @@ impl Backend for HaskellBackend {
         let mut out = Vec::new();
         for e in std::fs::read_dir(&dir)? {
             let e = e?;
-            out.push(e.file_name().to_string_lossy().into_owned());
+            let name = e.file_name().to_string_lossy().into_owned();
+            // Skip the install lock files written by `StoreLock::acquire`.
+            if name.ends_with(".qusp-lock") {
+                continue;
+            }
+            out.push(name);
         }
         out.sort_by(|a, b| version_cmp(b, a));
         Ok(out)
