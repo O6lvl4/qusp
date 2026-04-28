@@ -1,4 +1,4 @@
-//! qusp CLI — v0.19.0.
+//! qusp CLI — v0.20.0.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
@@ -235,6 +235,7 @@ fn build_registry() -> BackendRegistry {
     r.register(Arc::new(backends::crystal::CrystalBackend));
     r.register(Arc::new(backends::groovy::GroovyBackend));
     r.register(Arc::new(backends::dart::DartBackend));
+    r.register(Arc::new(backends::scala::ScalaBackend));
     r
 }
 
@@ -901,6 +902,7 @@ fn cmd_init(r: &BackendRegistry, langs: Option<Vec<String>>, force: bool) -> Res
                 "crystal" => "1.20.0",
                 "groovy" => "4.0.22",
                 "dart" => "3.5.4",
+                "scala" => "3.8.3",
                 _ => "<version>",
             };
             out.push_str(&format!("# [{id}]\n"));
@@ -933,6 +935,7 @@ fn cmd_init(r: &BackendRegistry, langs: Option<Vec<String>>, force: bool) -> Res
                 "crystal" => "1.20.0",
                 "groovy" => "4.0.22",
                 "dart" => "3.5.4",
+                "scala" => "3.8.3",
                 _ => "<version>",
             };
             out.push_str(&format!("[{id}]\n"));
