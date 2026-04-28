@@ -29,14 +29,37 @@
 
 ## On Hold — Phase 4: Language Breadth (2.x+)
 
-| 項目 | 説明 |
+> 言語ごとに 1 md。[jvm-family-via-coursier.md](on-hold/jvm-family-via-coursier.md) は
+> Scala / Clojure / Groovy の共通設計ノート (Coursier 経由 vs 直接 zip など)。
+
+### Single-binary 系 (難易度: 低)
+
+| 項目 | 入手経路 | コメント |
+|---|---|---|
+| [Zig](on-hold/zig.md) | ziglang.org tar.xz | xz サポートが新規依存。**最優先候補** |
+| [Julia](on-hold/julia.md) | julialang-s3 tarball | minor 切出しが要る |
+| [Crystal](on-hold/crystal.md) | crystal-lang/crystal releases | macOS Universal binary |
+| [Dart / Flutter](on-hold/dart-and-flutter.md) | storage.googleapis.com | Flutter SDK ~700MB |
+| [Groovy](on-hold/groovy.md) | archive.apache.org zip | `requires = ["java"]` |
+
+### Source-build 系 (spawn_blocking 例外、難易度: 中-高)
+
+| 項目 | コメント |
 |---|---|
-| [JVM family via Coursier](on-hold/jvm-family-via-coursier.md) | Scala / Clojure / Groovy |
-| [Elixir + Erlang](on-hold/elixir-and-erlang.md) | `requires = ["erlang"]` の入れ子 |
-| [Lua / LuaJIT](on-hold/lua.md) | |
-| [PHP](on-hold/php.md) | extension の扱いが難所 |
-| [Dart / Flutter](on-hold/dart-and-flutter.md) | Flutter SDK の重さ |
-| [Swift (server-side)](on-hold/swift.md) | swift.org tarball 直 |
+| [Lua / LuaJIT](on-hold/lua.md) | make build 単純、5.x major 並行 |
+| [PHP](on-hold/php.md) | php-build 利用、extension が地獄 |
+| [R](on-hold/r.md) | OS deps 重い、source build |
+| [Swift (server-side)](on-hold/swift.md) | Linux distro 別 tarball、PGP sig |
+| [Elixir + Erlang](on-hold/elixir-and-erlang.md) | Erlang OTP source build、Elixir prebuilt zip。`requires = ["erlang"]` |
+
+### Bootstrap-installer wrap 系 (qusp が installer を install して dispatch)
+
+| 項目 | bootstrap | コメント |
+|---|---|---|
+| [Haskell](on-hold/haskell.md) | ghcup | GHC build 5-10 分 |
+| [OCaml](on-hold/ocaml.md) | opam | base compiler build 5-15 分 |
+| [Scala](on-hold/scala.md) | Coursier | `requires = ["java"]` |
+| [Clojure](on-hold/clojure.md) | Coursier | Scala と Coursier 共有 |
 
 ## On Hold — Phase 5: Reproducibility & Nix Bridge (3.x)
 
