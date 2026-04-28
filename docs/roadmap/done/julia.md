@@ -1,7 +1,8 @@
 # Julia
 
-**優先度:** Phase 4 (2.x+)
-**難易度:** 低 (prebuilt あり、シンプル)
+**Shipped:** v0.16.0
+**Tag:** v0.16.0
+**Phase 4 第二弾。Single-binary 系。**
 
 ## なぜ
 
