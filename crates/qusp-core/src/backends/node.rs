@@ -146,6 +146,7 @@ impl Backend for NodeBackend {
         _qusp_paths: &AnyvPaths,
         version: &str,
         _opts: &InstallOpts,
+        _http: &dyn crate::effects::HttpFetcher,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -279,7 +280,8 @@ impl Backend for NodeBackend {
         Ok(out)
     }
 
-    async fn list_remote(&self, client: &reqwest::Client) -> Result<Vec<String>> {
+    async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
+        let client = http_client()?;
         let url = format!("{DIST_BASE}/index.json");
         let entries: Vec<NodeIndexEntry> = client
             .get(&url)
@@ -300,10 +302,11 @@ impl Backend for NodeBackend {
 
     async fn resolve_tool(
         &self,
-        client: &reqwest::Client,
+        _http: &dyn crate::effects::HttpFetcher,
         name: &str,
         spec: &ToolSpec,
     ) -> Result<ResolvedTool> {
+        let client = http_client()?;
         let pkg = spec
             .package_override()
             .map(String::from)
@@ -342,6 +345,7 @@ impl Backend for NodeBackend {
     async fn install_tool(
         &self,
         _qusp_paths: &AnyvPaths,
+        _http: &dyn crate::effects::HttpFetcher,
         toolchain_version: &str,
         resolved: &ResolvedTool,
     ) -> Result<LockedTool> {

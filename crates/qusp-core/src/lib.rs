@@ -8,6 +8,7 @@
 pub mod backend;
 pub mod backends;
 pub mod domain;
+pub mod effects;
 pub mod http;
 pub mod lock;
 pub mod manifest;

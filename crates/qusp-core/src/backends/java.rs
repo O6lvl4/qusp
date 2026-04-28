@@ -163,6 +163,7 @@ impl Backend for JavaBackend {
         _qusp_paths: &AnyvPaths,
         version: &str,
         opts: &InstallOpts,
+        _http: &dyn crate::effects::HttpFetcher,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -367,7 +368,8 @@ impl Backend for JavaBackend {
         Ok(out)
     }
 
-    async fn list_remote(&self, client: &reqwest::Client) -> Result<Vec<String>> {
+    async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
+        let client = http_client()?;
         // Surface major + LTS versions known to Foojay so users see what's
         // actually available without paginating thousands of point releases.
         let url = format!("{FOOJAY_BASE}/major_versions?ga=true");
@@ -405,10 +407,13 @@ impl Backend for JavaBackend {
 
     async fn resolve_tool(
         &self,
-        client: &reqwest::Client,
+        _http: &dyn crate::effects::HttpFetcher,
         name: &str,
         spec: &ToolSpec,
     ) -> Result<ResolvedTool> {
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("qusp-java/", env!("CARGO_PKG_VERSION")))
+            .build()?;
         let pkg = spec
             .package_override()
             .map(String::from)
@@ -420,8 +425,8 @@ impl Backend for JavaBackend {
                 )
             })?;
         match pkg.as_str() {
-            "maven" => resolve_maven(client, name, spec.version()).await,
-            "gradle" => resolve_gradle(client, name, spec.version()).await,
+            "maven" => resolve_maven(&client, name, spec.version()).await,
+            "gradle" => resolve_gradle(&client, name, spec.version()).await,
             other => bail!("internal: unknown java tool package '{other}'"),
         }
     }
@@ -429,6 +434,7 @@ impl Backend for JavaBackend {
     async fn install_tool(
         &self,
         _qusp_paths: &AnyvPaths,
+        _http: &dyn crate::effects::HttpFetcher,
         toolchain_version: &str,
         resolved: &ResolvedTool,
     ) -> Result<LockedTool> {

@@ -42,6 +42,7 @@ impl Backend for GoBackend {
         _qusp_paths: &AnyvPaths,
         version: &str,
         _opts: &InstallOpts,
+        _http: &dyn crate::effects::HttpFetcher,
     ) -> Result<InstallReport> {
         let paths = gv_core::paths::discover()?;
         paths.ensure_dirs()?;
@@ -81,17 +82,23 @@ impl Backend for GoBackend {
         gv_core::resolve::list_installed(&paths)
     }
 
-    async fn list_remote(&self, client: &reqwest::Client) -> Result<Vec<String>> {
-        let releases = gv_core::release::fetch_index(client).await?;
+    async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("qusp-go/", env!("CARGO_PKG_VERSION")))
+            .build()?;
+        let releases = gv_core::release::fetch_index(&client).await?;
         Ok(releases.iter().map(|r| r.version.clone()).collect())
     }
 
     async fn resolve_tool(
         &self,
-        client: &reqwest::Client,
+        _http: &dyn crate::effects::HttpFetcher,
         name: &str,
         spec: &ToolSpec,
     ) -> Result<ResolvedTool> {
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("qusp-go/", env!("CARGO_PKG_VERSION")))
+            .build()?;
         let gv_spec = match spec {
             ToolSpec::Short(v) => gv_core::project::ToolSpec::Short(v.clone()),
             ToolSpec::Long {
@@ -104,7 +111,7 @@ impl Backend for GoBackend {
                 bin: bin.clone(),
             },
         };
-        let r = gv_core::tool::resolve(client, name, &gv_spec).await?;
+        let r = gv_core::tool::resolve(&client, name, &gv_spec).await?;
         Ok(ResolvedTool {
             name: r.name,
             package: r.package,
@@ -117,6 +124,7 @@ impl Backend for GoBackend {
     async fn install_tool(
         &self,
         _qusp_paths: &AnyvPaths,
+        _http: &dyn crate::effects::HttpFetcher,
         toolchain_version: &str,
         resolved: &ResolvedTool,
     ) -> Result<LockedTool> {

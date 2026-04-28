@@ -93,6 +93,7 @@ impl Backend for BunBackend {
         _: &AnyvPaths,
         version: &str,
         _opts: &InstallOpts,
+        _http: &dyn crate::effects::HttpFetcher,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -262,7 +263,10 @@ impl Backend for BunBackend {
         Ok(out)
     }
 
-    async fn list_remote(&self, client: &reqwest::Client) -> Result<Vec<String>> {
+    async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("qusp-bun/", env!("CARGO_PKG_VERSION")))
+            .build()?;
         let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=30");
         let releases: Vec<GhRelease> = crate::http::gh_auth(client.get(&url))
             .header("Accept", "application/vnd.github+json")
@@ -283,7 +287,7 @@ impl Backend for BunBackend {
 
     async fn resolve_tool(
         &self,
-        _: &reqwest::Client,
+        _http: &dyn crate::effects::HttpFetcher,
         name: &str,
         _spec: &ToolSpec,
     ) -> Result<ResolvedTool> {
@@ -297,6 +301,7 @@ impl Backend for BunBackend {
     async fn install_tool(
         &self,
         _: &AnyvPaths,
+        _http: &dyn crate::effects::HttpFetcher,
         _toolchain_version: &str,
         _resolved: &ResolvedTool,
     ) -> Result<LockedTool> {

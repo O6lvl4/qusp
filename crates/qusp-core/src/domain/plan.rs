@@ -176,7 +176,8 @@ mod tests {
         r
     }
 
-    fn raw_with(entries: &[(&str, &str, Option<&str>, &[(&str, &str)])]) -> RawManifest {
+    type Entry<'a> = (&'a str, &'a str, Option<&'a str>, &'a [(&'a str, &'a str)]);
+    fn raw_with(entries: &[Entry<'_>]) -> RawManifest {
         let mut languages: BTreeMap<String, LanguageSection> = BTreeMap::new();
         for (lang, version, distribution, tools) in entries {
             let mut t = BTreeMap::new();
@@ -207,7 +208,10 @@ mod tests {
         let go = plans.iter().find(|p| p.language.as_str() == "go").unwrap();
         assert_eq!(go.version.as_str(), "1.26.2");
         assert!(go.distribution.is_none());
-        let java = plans.iter().find(|p| p.language.as_str() == "java").unwrap();
+        let java = plans
+            .iter()
+            .find(|p| p.language.as_str() == "java")
+            .unwrap();
         assert_eq!(java.distribution.as_ref().unwrap().as_str(), "temurin");
     }
 
@@ -218,26 +222,28 @@ mod tests {
 
         // Lock has gopls + golangci-lint; manifest only mentions gopls.
         let mut lock = Lock::empty();
-        let mut go_entry = LockedBackend::default();
-        go_entry.version = "1.26.2".into();
-        go_entry.tools = vec![
-            crate::backend::LockedTool {
-                name: "gopls".into(),
-                package: "golang.org/x/tools/gopls".into(),
-                version: "v0.21.0".into(),
-                bin: "/x/gopls".into(),
-                upstream_hash: "h1:abc".into(),
-                built_with: "1.26.2".into(),
-            },
-            crate::backend::LockedTool {
-                name: "golangci-lint".into(),
-                package: "github.com/golangci/golangci-lint/cmd/golangci-lint".into(),
-                version: "v2.0".into(),
-                bin: "/x/golangci-lint".into(),
-                upstream_hash: "h1:def".into(),
-                built_with: "1.26.2".into(),
-            },
-        ];
+        let go_entry = LockedBackend {
+            version: "1.26.2".into(),
+            tools: vec![
+                crate::backend::LockedTool {
+                    name: "gopls".into(),
+                    package: "golang.org/x/tools/gopls".into(),
+                    version: "v0.21.0".into(),
+                    bin: "/x/gopls".into(),
+                    upstream_hash: "h1:abc".into(),
+                    built_with: "1.26.2".into(),
+                },
+                crate::backend::LockedTool {
+                    name: "golangci-lint".into(),
+                    package: "github.com/golangci/golangci-lint/cmd/golangci-lint".into(),
+                    version: "v2.0".into(),
+                    bin: "/x/golangci-lint".into(),
+                    upstream_hash: "h1:def".into(),
+                    built_with: "1.26.2".into(),
+                },
+            ],
+            ..Default::default()
+        };
         lock.backends.insert("go".into(), go_entry);
 
         let plan = plan_sync(&pinned, &lock, false).unwrap();
@@ -253,8 +259,6 @@ mod tests {
         let raw = raw_with(&[("go", "1.26.2", None, &[("gopls", "latest")])]);
         let pinned = validate(&raw, &registry()).unwrap();
         let mut lock = Lock::empty();
-        let mut go_entry = LockedBackend::default();
-        go_entry.version = "1.26.2".into();
         let prev = crate::backend::LockedTool {
             name: "gopls".into(),
             package: "golang.org/x/tools/gopls".into(),
@@ -263,7 +267,11 @@ mod tests {
             upstream_hash: "h1:abc".into(),
             built_with: "1.26.2".into(),
         };
-        go_entry.tools = vec![prev.clone()];
+        let go_entry = LockedBackend {
+            version: "1.26.2".into(),
+            tools: vec![prev.clone()],
+            ..Default::default()
+        };
         lock.backends.insert("go".into(), go_entry);
 
         let plan = plan_sync(&pinned, &lock, true).unwrap();

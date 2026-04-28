@@ -12,6 +12,8 @@ use anyv_core::Paths;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::effects::HttpFetcher;
+
 /// A version pinned by some manifest the backend understands.
 #[derive(Debug, Clone)]
 pub struct DetectedVersion {
@@ -143,12 +145,15 @@ pub trait Backend: Send + Sync {
 
     /// Install a toolchain version. Idempotent. `opts` carries
     /// vendor-specific knobs (distribution, etc.); backends that don't
-    /// need them ignore via `let _ = opts;`.
+    /// need them ignore via `let _ = opts;`. `http` is the explicit
+    /// HTTP effect — production wires in [`crate::effects::LiveHttp`],
+    /// tests inject a mock with canned responses.
     async fn install(
         &self,
         paths: &Paths,
         version: &str,
         opts: &InstallOpts,
+        http: &dyn HttpFetcher,
     ) -> Result<InstallReport>;
 
     /// Drop a toolchain version (does not touch tool installs that
@@ -159,12 +164,12 @@ pub trait Backend: Send + Sync {
     fn list_installed(&self, paths: &Paths) -> Result<Vec<String>>;
 
     /// List all installable versions known to the upstream catalog.
-    async fn list_remote(&self, client: &reqwest::Client) -> Result<Vec<String>>;
+    async fn list_remote(&self, http: &dyn HttpFetcher) -> Result<Vec<String>>;
 
     /// Resolve a tool spec to a concrete version + canonical metadata.
     async fn resolve_tool(
         &self,
-        client: &reqwest::Client,
+        http: &dyn HttpFetcher,
         name: &str,
         spec: &ToolSpec,
     ) -> Result<ResolvedTool>;
@@ -173,6 +178,7 @@ pub trait Backend: Send + Sync {
     async fn install_tool(
         &self,
         paths: &Paths,
+        http: &dyn HttpFetcher,
         toolchain_version: &str,
         resolved: &ResolvedTool,
     ) -> Result<LockedTool>;

@@ -95,6 +95,7 @@ impl Backend for KotlinBackend {
         _: &AnyvPaths,
         version: &str,
         _opts: &InstallOpts,
+        _http: &dyn crate::effects::HttpFetcher,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -228,7 +229,10 @@ impl Backend for KotlinBackend {
         Ok(out)
     }
 
-    async fn list_remote(&self, client: &reqwest::Client) -> Result<Vec<String>> {
+    async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("qusp-kotlin/", env!("CARGO_PKG_VERSION")))
+            .build()?;
         #[derive(serde::Deserialize)]
         struct R {
             tag_name: String,
@@ -255,7 +259,7 @@ impl Backend for KotlinBackend {
 
     async fn resolve_tool(
         &self,
-        _: &reqwest::Client,
+        _http: &dyn crate::effects::HttpFetcher,
         name: &str,
         _spec: &ToolSpec,
     ) -> Result<ResolvedTool> {
@@ -270,6 +274,7 @@ impl Backend for KotlinBackend {
     async fn install_tool(
         &self,
         _: &AnyvPaths,
+        _http: &dyn crate::effects::HttpFetcher,
         _toolchain_version: &str,
         _resolved: &ResolvedTool,
     ) -> Result<LockedTool> {

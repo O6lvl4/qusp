@@ -11,6 +11,7 @@ use futures::future::try_join_all;
 use crate::backend::{Backend, InstallOpts, LockedTool, ResolvedTool, ToolSpec};
 use crate::domain::plan::{plan_install_toolchains, plan_sync, InstallPlan, SyncPlan};
 use crate::domain::PinnedManifest;
+use crate::effects::{HttpFetcher, LiveHttp};
 use crate::lock::Lock;
 use crate::manifest::Manifest;
 use crate::registry::BackendRegistry;
@@ -79,7 +80,9 @@ impl<'a> Orchestrator<'a> {
                 distribution: plan.distribution.as_ref().map(|d| d.as_str().to_string()),
             };
             futs.push(async move {
-                let result = backend.install(&paths, &version, &opts).await;
+                let http = LiveHttp::new(concat!("qusp/", env!("CARGO_PKG_VERSION")))
+                    .expect("LiveHttp build cannot fail with default reqwest config");
+                let result = backend.install(&paths, &version, &opts, &http).await;
                 (lang, result)
             });
         }
@@ -108,10 +111,10 @@ impl<'a> Orchestrator<'a> {
         manifest: &PinnedManifest,
         lock: &mut Lock,
         frozen: bool,
-        client: &reqwest::Client,
+        http: &dyn HttpFetcher,
     ) -> Result<SyncSummary> {
         let plan = plan_sync(manifest, lock, frozen)?;
-        self.execute_sync_plan(&plan, lock, client).await
+        self.execute_sync_plan(&plan, lock, http).await
     }
 
     /// **Effect:** apply a SyncPlan against the live system + the
@@ -121,11 +124,11 @@ impl<'a> Orchestrator<'a> {
         &self,
         plan: &SyncPlan,
         lock: &mut Lock,
-        client: &reqwest::Client,
+        http: &dyn HttpFetcher,
     ) -> Result<SyncSummary> {
         let install_result = self.execute_install_plans(&plan.install_toolchains).await?;
         self.apply_lock_header_updates(plan, lock);
-        let tools = self.execute_tool_install_plans(plan, lock, client).await?;
+        let tools = self.execute_tool_install_plans(plan, lock, http).await?;
         let removed = self.apply_tool_prunes(plan, lock);
         Ok(SyncSummary {
             langs_installed: install_result.installed,
@@ -172,7 +175,7 @@ impl<'a> Orchestrator<'a> {
         &self,
         plan: &SyncPlan,
         lock: &mut Lock,
-        client: &reqwest::Client,
+        _http: &dyn HttpFetcher,
     ) -> Result<Vec<(String, LockedTool)>> {
         if plan.install_tools.is_empty() {
             return Ok(vec![]);
@@ -205,9 +208,9 @@ impl<'a> Orchestrator<'a> {
                     as std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send>>);
             } else {
                 let spec = tool.spec.clone();
-                let client = client.clone();
                 resolve_futs.push(Box::pin(async move {
-                    let r = backend.resolve_tool(&client, &name, &spec).await?;
+                    let http = LiveHttp::new(concat!("qusp/", env!("CARGO_PKG_VERSION")))?;
+                    let r = backend.resolve_tool(&http, &name, &spec).await?;
                     Ok((lang, r))
                 }));
             }
@@ -225,8 +228,9 @@ impl<'a> Orchestrator<'a> {
             let r_clone = r.clone();
             let lang_clone = lang.clone();
             install_futs.push(async move {
+                let http = LiveHttp::new(concat!("qusp/", env!("CARGO_PKG_VERSION")))?;
                 let locked = backend
-                    .install_tool(&paths, &toolchain_version, &r_clone)
+                    .install_tool(&paths, &http, &toolchain_version, &r_clone)
                     .await?;
                 Ok::<_, anyhow::Error>((lang_clone, locked))
             });
@@ -267,7 +271,7 @@ impl<'a> Orchestrator<'a> {
         lock: &mut Lock,
         name: &str,
         version: &str,
-        client: &reqwest::Client,
+        http: &dyn HttpFetcher,
     ) -> Result<(String, LockedTool)> {
         let (lang, backend) = self.route_tool(name)?;
         let toolchain_version = manifest
@@ -280,9 +284,9 @@ impl<'a> Orchestrator<'a> {
                 )
             })?;
         let spec = ToolSpec::Short(version.to_string());
-        let resolved = backend.resolve_tool(client, name, &spec).await?;
+        let resolved = backend.resolve_tool(http, name, &spec).await?;
         let locked = backend
-            .install_tool(self.paths, &toolchain_version, &resolved)
+            .install_tool(self.paths, http, &toolchain_version, &resolved)
             .await?;
         let distribution = manifest
             .languages

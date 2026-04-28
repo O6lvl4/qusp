@@ -104,6 +104,7 @@ impl Backend for RustBackend {
         _: &AnyvPaths,
         version: &str,
         _opts: &InstallOpts,
+        _http: &dyn crate::effects::HttpFetcher,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -234,11 +235,14 @@ impl Backend for RustBackend {
         Ok(out)
     }
 
-    async fn list_remote(&self, client: &reqwest::Client) -> Result<Vec<String>> {
+    async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("qusp-rust/", env!("CARGO_PKG_VERSION")))
+            .build()?;
         // Resolved stable first so consumers (e.g. `qusp outdated`) treat
         // the concrete version as "newest". Channel pointers follow for
         // human reference.
-        let stable = resolve_channel(client, "stable").await.unwrap_or_default();
+        let stable = resolve_channel(&client, "stable").await.unwrap_or_default();
         let mut out = Vec::new();
         if !stable.is_empty() {
             out.push(stable);
@@ -249,7 +253,7 @@ impl Backend for RustBackend {
 
     async fn resolve_tool(
         &self,
-        _: &reqwest::Client,
+        _http: &dyn crate::effects::HttpFetcher,
         name: &str,
         _spec: &ToolSpec,
     ) -> Result<ResolvedTool> {
@@ -264,6 +268,7 @@ impl Backend for RustBackend {
     async fn install_tool(
         &self,
         _: &AnyvPaths,
+        _http: &dyn crate::effects::HttpFetcher,
         _toolchain_version: &str,
         _resolved: &ResolvedTool,
     ) -> Result<LockedTool> {

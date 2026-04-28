@@ -1,4 +1,4 @@
-//! qusp CLI — v0.11.0.
+//! qusp CLI — v0.12.0.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
@@ -260,7 +260,8 @@ async fn cmd_install(
             .and_then(|s| s.distribution);
         let pb = spinner(format!("installing {lang} {version}"));
         let opts = qusp_core::InstallOpts { distribution };
-        let report = backend.install(paths, version, &opts).await?;
+        let http = qusp_core::effects::LiveHttp::new(concat!("qusp/", env!("CARGO_PKG_VERSION")))?;
+        let report = backend.install(paths, version, &opts, &http).await?;
         pb.finish_and_clear();
         say!("{} {lang} {} installed", success_mark(), report.version);
         if !report.install_dir.as_os_str().is_empty() {
@@ -333,7 +334,7 @@ async fn cmd_sync(r: &BackendRegistry, paths: &qusp_core::Paths, frozen: bool) -
     let pinned = qusp_core::domain::validate(&m, r)?;
     let mut lock = lock::Lock::load(&root)?;
     let orch = qusp_core::orchestrator::Orchestrator::new(r, paths);
-    let client = http_client()?;
+    let client = http()?;
     let started = std::time::Instant::now();
     let summary = orch.sync(&pinned, &mut lock, frozen, &client).await?;
     let elapsed = started.elapsed().as_millis();
@@ -428,7 +429,7 @@ async fn cmd_add_tool(
         Some((n, v)) => (n.to_string(), v.to_string()),
         None => (spec.to_string(), "latest".to_string()),
     };
-    let client = http_client()?;
+    let client = http()?;
     let orch = qusp_core::orchestrator::Orchestrator::new(r, paths);
     let pb = spinner(format!("resolving {name}"));
     let (lang, locked) = orch
@@ -577,7 +578,7 @@ async fn cmd_x(
         }
     };
 
-    let client = http_client()?;
+    let client = http()?;
     let pb = spinner(format!("resolving {cmd}"));
     let resolved = backend
         .resolve_tool(
@@ -592,7 +593,7 @@ async fn cmd_x(
         resolved.name, resolved.version
     ));
     let locked = backend
-        .install_tool(paths, &toolchain_version, &resolved)
+        .install_tool(paths, &client, &toolchain_version, &resolved)
         .await?;
     pb.finish_and_clear();
 
@@ -944,7 +945,7 @@ async fn cmd_outdated(r: &BackendRegistry) -> Result<ExitCode> {
         );
         return Ok(ExitCode::SUCCESS);
     }
-    let client = http_client()?;
+    let client = http()?;
     let mut hits = 0usize;
     for (lang, entry) in &lock.backends {
         let Some(backend) = r.get(lang) else { continue };
@@ -1024,9 +1025,11 @@ async fn cmd_self_update(check: bool) -> Result<ExitCode> {
         bin_name: "qusp",
         current_version: env!("CARGO_PKG_VERSION"),
     };
-    let client = http_client()?;
+    // anyv-core's SelfUpdate predates qusp's HttpFetcher trait and still
+    // wants a raw reqwest::Client. Pull it out of LiveHttp.
+    let live = http()?;
     let pb = spinner("checking github.com/O6lvl4/qusp/releases/latest");
-    let info = updater.run(&client, check).await?;
+    let info = updater.run(live.raw(), check).await?;
     pb.finish_and_clear();
     use anyv_core::selfupdate::Outcome;
     match info.outcome {
@@ -1071,7 +1074,7 @@ async fn cmd_list(
         .get(lang)
         .ok_or_else(|| anyhow!("unknown language: {lang}"))?;
     if remote {
-        let client = http_client()?;
+        let client = http()?;
         for v in backend.list_remote(&client).await? {
             println!("{v}");
         }
@@ -1202,8 +1205,11 @@ fn cmd_completions(shell: clap_complete::Shell) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn http_client() -> Result<reqwest::Client> {
-    qusp_core::http::client(concat!("qusp/", env!("CARGO_PKG_VERSION")))
+/// Build the live HTTP effect handle. Used as `&dyn HttpFetcher` for
+/// every Backend/Orchestrator call. anyv-core's SelfUpdate still wants
+/// a raw `reqwest::Client`; for that, use `http().raw().clone()`.
+fn http() -> Result<qusp_core::effects::LiveHttp> {
+    qusp_core::effects::LiveHttp::new(concat!("qusp/", env!("CARGO_PKG_VERSION")))
 }
 
 #[allow(dead_code)]

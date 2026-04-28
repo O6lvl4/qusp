@@ -42,6 +42,7 @@ impl Backend for RubyBackend {
         _qusp_paths: &AnyvPaths,
         version: &str,
         _opts: &InstallOpts,
+        _http: &dyn crate::effects::HttpFetcher,
     ) -> Result<InstallReport> {
         let paths = rv_core::paths::discover()?;
         paths.ensure_dirs()?;
@@ -69,7 +70,7 @@ impl Backend for RubyBackend {
         rv_core::resolve::list_installed(&paths)
     }
 
-    async fn list_remote(&self, _client: &reqwest::Client) -> Result<Vec<String>> {
+    async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
         // Delegates to ruby-build --definitions (synchronous shell-out).
         tokio::task::spawn_blocking(rv_core::install::list_remote)
             .await
@@ -78,10 +79,15 @@ impl Backend for RubyBackend {
 
     async fn resolve_tool(
         &self,
-        client: &reqwest::Client,
+        _http: &dyn crate::effects::HttpFetcher,
         name: &str,
         spec: &ToolSpec,
     ) -> Result<ResolvedTool> {
+        // rv-core's resolver expects a reqwest::Client; build a local one
+        // for now. Phase 3.5 will migrate this through the HttpFetcher trait.
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("qusp-ruby/", env!("CARGO_PKG_VERSION")))
+            .build()?;
         let rv_spec = match spec {
             ToolSpec::Short(v) => rv_core::project::ToolSpec::Short(v.clone()),
             ToolSpec::Long {
@@ -94,7 +100,7 @@ impl Backend for RubyBackend {
                 bin: bin.clone(),
             },
         };
-        let r = rv_core::tool::resolve(client, name, &rv_spec).await?;
+        let r = rv_core::tool::resolve(&client, name, &rv_spec).await?;
         Ok(ResolvedTool {
             name: r.name,
             package: r.gem,
@@ -107,6 +113,7 @@ impl Backend for RubyBackend {
     async fn install_tool(
         &self,
         _qusp_paths: &AnyvPaths,
+        _http: &dyn crate::effects::HttpFetcher,
         toolchain_version: &str,
         resolved: &ResolvedTool,
     ) -> Result<LockedTool> {
