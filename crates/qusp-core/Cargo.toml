@@ -25,4 +25,9 @@ sha2.workspace = true
 hex.workspace = true
 base64 = "0.22"
 bytes = "1"
+# `.tar.xz` decompression for Zig (only backend that needs xz so far).
+# Pure-Rust impl to avoid pulling in liblzma; slower than xz2 but install
+# is one-shot so the difference is invisible.
+lzma-rs = "0.3"
+tar = "0.4"
 tracing.workspace = true

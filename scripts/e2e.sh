@@ -18,8 +18,8 @@ e2e_dir="$self_dir/e2e"
 
 # Order matters: smoke first (fast, no network beyond GitHub releases for
 # self-update), then fast toolchain installs, then slow ones.
-DEFAULT_TESTS=(smoke go node deno bun rust python java kotlin ruby)
-FAST_TESTS=(smoke go node deno bun rust python)
+DEFAULT_TESTS=(smoke go node deno bun rust python java kotlin zig ruby)
+FAST_TESTS=(smoke go node deno bun rust python zig)
 
 fast=0
 specific=()
