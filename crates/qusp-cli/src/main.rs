@@ -1,4 +1,4 @@
-//! qusp CLI — v0.3.0.
+//! qusp CLI — v0.4.0.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
@@ -201,6 +201,8 @@ fn build_registry() -> BackendRegistry {
     r.register(Arc::new(backends::go::GoBackend));
     r.register(Arc::new(backends::ruby::RubyBackend));
     r.register(Arc::new(backends::python::PythonBackend));
+    r.register(Arc::new(backends::node::NodeBackend));
+    r.register(Arc::new(backends::deno::DenoBackend));
     r
 }
 
@@ -353,10 +355,24 @@ fn cmd_run(
     if argv.is_empty() { bail!("usage: qusp run <cmd> [args...]"); }
     let cwd = std::env::current_dir()?;
     let root = manifest::find_root(&cwd);
-    let lock = match root.as_deref() {
+    let mut lock = match root.as_deref() {
         Some(r) => lock::Lock::load(r).unwrap_or_else(|_| lock::Lock::empty()),
         None => lock::Lock::empty(),
     };
+    // Fall back to manifest pins for any backend that the lock doesn't
+    // already cover. Lets `qusp run` work after `qusp install` even
+    // without an intermediate `qusp sync`.
+    if let Some(root) = root.as_deref() {
+        if let Ok(m) = manifest::load(root) {
+            for (lang, sec) in &m.languages {
+                let Some(v) = sec.version.clone() else { continue; };
+                let entry = lock.backends.entry(lang.clone()).or_default();
+                if entry.version.is_empty() {
+                    entry.version = v;
+                }
+            }
+        }
+    }
     let cmd = &argv[0];
     let orch = qusp_core::orchestrator::Orchestrator::new(r, paths);
 
