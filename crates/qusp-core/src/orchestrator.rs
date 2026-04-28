@@ -28,8 +28,15 @@ pub struct InstallSummary {
 #[derive(Debug, Clone)]
 pub struct SyncSummary {
     pub langs_installed: Vec<InstallSummary>,
+    pub langs_failed: Vec<(String, String)>,
     pub tools_installed: Vec<(String, LockedTool)>,
     pub tools_removed_from_lock: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct InstallToolchainsResult {
+    pub installed: Vec<InstallSummary>,
+    pub failed: Vec<(String, String)>,
 }
 
 impl<'a> Orchestrator<'a> {
@@ -39,8 +46,10 @@ impl<'a> Orchestrator<'a> {
 
     /// Install every (lang, version) declared in the manifest. Runs in
     /// parallel across backends. Threads each section's `distribution`
-    /// into the backend's `InstallOpts`.
-    pub async fn install_toolchains(&self, manifest: &Manifest) -> Result<Vec<InstallSummary>> {
+    /// into the backend's `InstallOpts`. Per-backend failures are
+    /// **collected, not propagated** — one broken backend doesn't kill
+    /// the rest. The caller decides whether the partial set is OK.
+    pub async fn install_toolchains(&self, manifest: &Manifest) -> Result<InstallToolchainsResult> {
         let mut futs = Vec::new();
         for (lang, sec) in &manifest.languages {
             let Some(version) = sec.version.clone() else {
@@ -55,15 +64,24 @@ impl<'a> Orchestrator<'a> {
                 distribution: sec.distribution.clone(),
             };
             futs.push(async move {
-                let report = backend.install(&paths, &version, &opts).await?;
-                Ok::<_, anyhow::Error>(InstallSummary {
+                let result = backend.install(&paths, &version, &opts).await;
+                (lang, result)
+            });
+        }
+        let outcomes = futures::future::join_all(futs).await;
+        let mut installed = Vec::new();
+        let mut failed = Vec::new();
+        for (lang, result) in outcomes {
+            match result {
+                Ok(report) => installed.push(InstallSummary {
                     lang,
                     version: report.version,
                     already_present: report.already_present,
-                })
-            });
+                }),
+                Err(e) => failed.push((lang, format!("{e:#}"))),
+            }
         }
-        try_join_all(futs).await
+        Ok(InstallToolchainsResult { installed, failed })
     }
 
     /// Install every pinned tool, in parallel. Requires that the relevant
@@ -198,7 +216,9 @@ impl<'a> Orchestrator<'a> {
     }
 
     /// End-to-end sync: install toolchains, install tools, prune stale,
-    /// reconcile lock.
+    /// reconcile lock. Toolchain install failures are surfaced in the
+    /// summary instead of aborting the whole sync — a broken Python
+    /// pin shouldn't block Go tools from installing.
     pub async fn sync(
         &self,
         manifest: &Manifest,
@@ -206,7 +226,7 @@ impl<'a> Orchestrator<'a> {
         frozen: bool,
         client: &reqwest::Client,
     ) -> Result<SyncSummary> {
-        let langs = self.install_toolchains(manifest).await?;
+        let install_result = self.install_toolchains(manifest).await?;
         self.sync_toolchain_versions(manifest, lock);
         let tools = self.install_tools(manifest, lock, frozen, client).await?;
         let removed = if !frozen {
@@ -215,7 +235,8 @@ impl<'a> Orchestrator<'a> {
             0
         };
         Ok(SyncSummary {
-            langs_installed: langs,
+            langs_installed: install_result.installed,
+            langs_failed: install_result.failed,
             tools_installed: tools,
             tools_removed_from_lock: removed,
         })

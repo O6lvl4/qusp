@@ -127,16 +127,34 @@ impl Backend for PythonBackend {
             .await
             .context("parse python-build-standalone release index")?;
 
-        let asset_prefix = format!("cpython-{version}+");
+        // PBS publishes a single "latest patch" per minor line, so an
+        // exact match for `3.13.0` may not exist while `3.13.5` does.
+        // Try exact first, then fall back to latest patch sharing the
+        // same `<major>.<minor>` prefix (so `3.13.0` resolves to the
+        // newest 3.13.x available).
         let asset_suffix = format!("-{triple}-install_only_stripped.tar.gz");
+        let exact_prefix = format!("cpython-{version}+");
         let asset = releases
             .iter()
             .flat_map(|r| r.assets.iter())
-            .find(|a| a.name.starts_with(&asset_prefix) && a.name.ends_with(&asset_suffix))
+            .find(|a| a.name.starts_with(&exact_prefix) && a.name.ends_with(&asset_suffix))
+            .or_else(|| {
+                let minor = python_minor_prefix(version);
+                let fuzzy_prefix = format!("cpython-{minor}.");
+                releases
+                    .iter()
+                    .flat_map(|r| r.assets.iter())
+                    .filter(|a| {
+                        a.name.starts_with(&fuzzy_prefix) && a.name.ends_with(&asset_suffix)
+                    })
+                    .max_by(|a, b| compare_pbs_asset_versions(&a.name, &b.name))
+            })
             .ok_or_else(|| {
                 anyhow!(
                     "no python-build-standalone asset found for {version} on {triple} \
-                 (looked at the {n} most recent releases)",
+                     (looked at the {n} most recent releases). Try a different patch like \
+                     `python = \"{}.0\"` and qusp will auto-select the latest patch.",
+                    python_minor_prefix(version),
                     n = releases.len(),
                 )
             })?;
@@ -247,8 +265,18 @@ impl Backend for PythonBackend {
         })?;
 
         let _ = std::fs::remove_file(&cache_path);
+        // Report the resolved version (e.g. `3.13.5+20260414`) — what
+        // PBS actually shipped — alongside the user-pinned install dir
+        // (still keyed by the original `version` arg so the lock and
+        // future `build_run_env` calls line up).
+        let resolved_version = asset
+            .name
+            .strip_prefix("cpython-")
+            .and_then(|s| s.split('-').next())
+            .unwrap_or(version)
+            .to_string();
         Ok(InstallReport {
-            version: version.to_string(),
+            version: resolved_version,
             install_dir,
             already_present: false,
         })
@@ -360,4 +388,37 @@ fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
         )
     }
     parts(a).cmp(&parts(b))
+}
+
+/// `"3.13.0"` → `"3.13"`. `"3.13"` → `"3.13"`.
+fn python_minor_prefix(v: &str) -> String {
+    let mut it = v.split('.');
+    let major = it.next().unwrap_or("");
+    let minor = it.next().unwrap_or("");
+    if major.is_empty() || minor.is_empty() {
+        v.to_string()
+    } else {
+        format!("{major}.{minor}")
+    }
+}
+
+/// Compare two PBS asset filenames by the embedded patch+date. Higher
+/// patch wins; ties broken by build tag (date stamp).
+fn compare_pbs_asset_versions(a: &str, b: &str) -> std::cmp::Ordering {
+    fn key(name: &str) -> (u64, u64, u64, u64) {
+        // Filename: cpython-3.13.5+20260414-x86_64-apple-darwin-...
+        let rest = name.strip_prefix("cpython-").unwrap_or(name);
+        let (ver, after_plus) = rest.split_once('+').unwrap_or((rest, ""));
+        let mut vp = ver.split('.').map(|x| x.parse::<u64>().unwrap_or(0));
+        let major = vp.next().unwrap_or(0);
+        let minor = vp.next().unwrap_or(0);
+        let patch = vp.next().unwrap_or(0);
+        let build = after_plus
+            .split(|c: char| !c.is_ascii_digit())
+            .next()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        (major, minor, patch, build)
+    }
+    key(a).cmp(&key(b))
 }

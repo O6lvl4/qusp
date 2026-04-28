@@ -1,4 +1,4 @@
-//! qusp CLI — v0.8.0.
+//! qusp CLI — v0.8.1.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
@@ -281,16 +281,16 @@ async fn cmd_install(
     }
     let orch = qusp_core::orchestrator::Orchestrator::new(r, paths);
     let started = std::time::Instant::now();
-    let summaries = orch.install_toolchains(&m).await?;
+    let result = orch.install_toolchains(&m).await?;
     let elapsed = started.elapsed().as_millis();
     say!(
         "{} Installed {} toolchain{} in {}",
         success_mark(),
-        summaries.len(),
-        if summaries.len() == 1 { "" } else { "s" },
+        result.installed.len(),
+        if result.installed.len() == 1 { "" } else { "s" },
         format_duration_ms(elapsed)
     );
-    for s in &summaries {
+    for s in &result.installed {
         let mark = if s.already_present {
             dim("=")
         } else {
@@ -306,6 +306,19 @@ async fn cmd_install(
             color_cyan(&s.lang),
             color_bold(&s.version)
         );
+    }
+    if !result.failed.is_empty() {
+        eprintln!();
+        eprintln!(
+            "{} {} toolchain{} failed:",
+            color_yellow("!"),
+            result.failed.len(),
+            if result.failed.len() == 1 { "" } else { "s" }
+        );
+        for (lang, err) in &result.failed {
+            eprintln!("  {} {}: {}", color_yellow("✗"), color_cyan(lang), err);
+        }
+        return Ok(ExitCode::from(1));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -366,6 +379,22 @@ async fn cmd_sync(r: &BackendRegistry, paths: &qusp_core::Paths, frozen: bool) -
                 "ies"
             }
         );
+    }
+    if !summary.langs_failed.is_empty() {
+        eprintln!();
+        eprintln!(
+            "{} {} toolchain{} failed (other backends still installed):",
+            color_yellow("!"),
+            summary.langs_failed.len(),
+            if summary.langs_failed.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        );
+        for (lang, err) in &summary.langs_failed {
+            eprintln!("  {} {}: {}", color_yellow("✗"), color_cyan(lang), err);
+        }
     }
     if !frozen {
         lock.save(&root)?;
