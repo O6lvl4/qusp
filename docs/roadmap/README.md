@@ -59,17 +59,41 @@
 ## On Hold — Phase 5: Hospitality Parity (2.x) ★ 新
 
 > **新方針:** uv が Python 単体に対してやってる ergonomic 密度を 18+ 言語横断で再現する。
-> 設計の根拠と uv/mise/asdf 比較は **[hospitality-parity.md](on-hold/hospitality-parity.md)** 参照。
+> 設計の根拠と **実測 audit (29 項目, 2026-04-28 snapshot, ✅ 12 / 🟡 11 / ❌ 9 / 設計差 3 / scope 違い 2 / バグ 1) + 完了基準 (✅ 18+/23 評価対象 ≥ 78%)** は **[hospitality-parity.md](on-hold/hospitality-parity.md)** に記録。
+
+### Umbrella
 
 | 項目 | 説明 | Grand Plan |
 |---|---|---|
-| [Hospitality 概念 + 競争 position 定義](on-hold/hospitality-parity.md) | umbrella doc | Phase 5 |
-| [Did-you-mean fuzzy 全 backend 展開](on-hold/did-you-mean-cross-backend.md) | Python だけにある fuzzy を全 backend で | Phase 5 |
-| [Progress display を uv 級に揃える](on-hold/progress-display-uv-class.md) | spinner / ETA / "downloaded N of M" | Phase 5 |
-| [Cross-language tool install registry](on-hold/tool-registry-cross-language.md) | `qusp tool install ruff/gopls/scalafmt/...` | Phase 5 (Phase 3 を内包) |
-| [Inline script metadata (PEP 723 風)](on-hold/inline-script-metadata.md) | `# qusp: lua = 5.4.7` で auto pin | Phase 5 |
-| [Error richness: distribution defaults](on-hold/error-richness-distribution-defaults.md) | uv 級 actionable error | Phase 5 |
-| [shellenv auto-eval](on-hold/shellenv-auto-eval.md) | rcfile 編集を要求しない経路 (現状 D 案 = no-op で行く前提) | Phase 5 |
+| [Hospitality 概念 + 実測 audit + 完了基準](on-hold/hospitality-parity.md) | umbrella doc, 全 sub-task の親 | Phase 5 |
+
+### High priority (audit ❌ 解決)
+
+| 項目 | audit row | 説明 |
+|---|---|---|
+| [Did-you-mean fuzzy 全 backend 展開](on-hold/did-you-mean-cross-backend.md) | A5 / A5b / K1 | Python 専用の fuzzy を全 18 backend で + silent substitution 通告 |
+| [Progress display を uv 級に揃える](on-hold/progress-display-uv-class.md) | A3 / A4 | "Downloading X (NMiB)" 単行 progress、build subprocess も統一 |
+| [Cross-language tool install registry](on-hold/tool-registry-cross-language.md) | D3 / D4 | `qusp tool install ruff/gopls/scalafmt/...` (uvx 同形) |
+| [Inline script metadata (PEP 723 風)](on-hold/inline-script-metadata.md) | D2 | `# qusp: lua = 5.4.7` で auto pin |
+| [Network resilience + retry](on-hold/network-resilience-retry.md) | A7 | HttpFetcher に retry layer、parse error 露出を消す |
+| [Cache management](on-hold/cache-management.md) | G2 / G3 | `qusp cache clean / prune --ci`、reachable-set GC |
+| [Force reinstall flag](on-hold/force-reinstall.md) | N1 | `qusp install --reinstall` (`-r`, `-f`) |
+
+### Medium priority (audit 🟡 → ✅)
+
+| 項目 | audit row | 説明 |
+|---|---|---|
+| [Error richness: distribution defaults](on-hold/error-richness-distribution-defaults.md) | A5 / K1 / K2 | InstallErr enum + 各 error に actionable next-step |
+| [List remote richness](on-hold/list-remote-richness.md) | B1 / I1 | impl tag + install-status + source col |
+| [Resolve current の絶対 path](on-hold/current-resolved-path.md) | B3 | `qusp current python --resolved` |
+| [version 文字列に build rev + date](on-hold/version-build-metadata.md) | C2 | build.rs で git rev / build date 埋め込み |
+| [PATH not-on-path 案内](on-hold/path-not-on-path-guidance.md) | D6 | install 後 hint + `qusp doctor` shell-hook 検出 |
+
+### Low priority / Defer
+
+| 項目 | audit row | 説明 |
+|---|---|---|
+| [shellenv auto-eval](on-hold/shellenv-auto-eval.md) | D6 延長 | rcfile 編集ゼロ経路 (現状 D 案 = no-op で行く前提) |
 
 ## On Hold — Phase 6: Reproducibility & Nix Bridge (3.x)
 
