@@ -1,0 +1,64 @@
+name: e2e
+
+# End-to-end install/run/tool-routing across all 8 backends, against
+# real publisher CDNs. Catches upstream breakage (e.g. PBS dropping a
+# Python version, Foojay schema drift, npm package being yanked) early.
+
+on:
+  schedule:
+    # Daily at 04:17 UTC (off the hour to dodge GitHub's busy minute).
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+    inputs:
+      tests:
+        description: "Space-separated test names, or empty for the default set (e.g. 'go rust java')"
+        required: false
+        default: ""
+      fast:
+        description: "Skip slow backends (java, ruby)"
+        type: boolean
+        default: false
+
+jobs:
+  e2e:
+    name: e2e (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-14]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: build qusp (release)
+        run: cargo build --release --locked --bin qusp
+
+      - name: install ruby-build prerequisites (linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf bison build-essential libssl-dev \
+            libyaml-dev libreadline6-dev zlib1g-dev libncurses5-dev libffi-dev \
+            libgdbm6 libgdbm-dev libdb-dev uuid-dev
+
+      - name: install ruby-build prerequisites (macos)
+        if: runner.os == 'macOS'
+        run: |
+          brew update
+          brew install openssl@3 libyaml gmp readline
+
+      - name: run e2e
+        env:
+          QUSP_BIN: ${{ github.workspace }}/target/release/qusp
+          E2E_VERBOSE: "1"
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.tests }}" ]; then
+              bash scripts/e2e.sh ${{ inputs.tests }}
+          elif [ "${{ inputs.fast }}" = "true" ]; then
+              bash scripts/e2e.sh --fast
+          else
+              bash scripts/e2e.sh
+          fi
