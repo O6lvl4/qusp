@@ -1,4 +1,4 @@
-//! qusp CLI — v0.9.0.
+//! qusp CLI — v0.10.0.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
@@ -280,9 +280,10 @@ async fn cmd_install(
         say!("{}", dim("(qusp.toml has no languages pinned)"));
         return Ok(ExitCode::SUCCESS);
     }
+    let pinned = qusp_core::domain::validate(&m, r)?;
     let orch = qusp_core::orchestrator::Orchestrator::new(r, paths);
     let started = std::time::Instant::now();
-    let result = orch.install_toolchains(&m).await?;
+    let result = orch.install_toolchains(&pinned).await?;
     let elapsed = started.elapsed().as_millis();
     say!(
         "{} Installed {} toolchain{} in {}",
@@ -329,11 +330,12 @@ async fn cmd_sync(r: &BackendRegistry, paths: &qusp_core::Paths, frozen: bool) -
     let root = manifest::find_root(&cwd)
         .ok_or_else(|| anyhow!("no qusp.toml found above {}", cwd.display()))?;
     let m = manifest::load(&root)?;
+    let pinned = qusp_core::domain::validate(&m, r)?;
     let mut lock = lock::Lock::load(&root)?;
     let orch = qusp_core::orchestrator::Orchestrator::new(r, paths);
     let client = http_client()?;
     let started = std::time::Instant::now();
-    let summary = orch.sync(&m, &mut lock, frozen, &client).await?;
+    let summary = orch.sync(&pinned, &mut lock, frozen, &client).await?;
     let elapsed = started.elapsed().as_millis();
     say!(
         "{} Synced {} toolchain{} + {} tool{} in {}",

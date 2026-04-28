@@ -9,6 +9,7 @@ use anyv_core::Paths;
 use futures::future::try_join_all;
 
 use crate::backend::{Backend, InstallOpts, LockedTool, ResolvedTool, ToolSpec};
+use crate::domain::PinnedManifest;
 use crate::lock::Lock;
 use crate::manifest::Manifest;
 use crate::registry::BackendRegistry;
@@ -44,44 +45,27 @@ impl<'a> Orchestrator<'a> {
         Self { registry, paths }
     }
 
-    /// Validate cross-backend requirements declared via `Backend::requires`.
-    /// Errors before any install runs if a dependency is missing — e.g.
-    /// `[kotlin]` pinned without `[java]` is caught here, not after a
-    /// kotlin install gets halfway through.
-    pub fn validate_requires(&self, manifest: &Manifest) -> Result<()> {
-        for lang in manifest.languages.keys() {
-            let Some(backend) = self.registry.get(lang) else {
-                continue;
-            };
-            for required in backend.requires() {
-                if !manifest.languages.contains_key(*required) {
-                    bail!(
-                        "[{lang}] requires [{required}] to be pinned in qusp.toml — \
-                         add a [{required}] section with a version before installing {lang}"
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Install every (lang, version) declared in the manifest. Runs in
     /// parallel across backends. Threads each section's `distribution`
     /// into the backend's `InstallOpts`. Per-backend failures are
     /// **collected, not propagated** — one broken backend doesn't kill
     /// the rest. The caller decides whether the partial set is OK.
-    pub async fn install_toolchains(&self, manifest: &Manifest) -> Result<InstallToolchainsResult> {
-        self.validate_requires(manifest)?;
+    ///
+    /// Takes a `&PinnedManifest`, not a `&Manifest` — by the time we're
+    /// here, validation (unknown lang, missing version, cross-backend
+    /// `requires`) has already run.
+    pub async fn install_toolchains(
+        &self,
+        manifest: &PinnedManifest,
+    ) -> Result<InstallToolchainsResult> {
         let mut futs = Vec::new();
-        for (lang, sec) in &manifest.languages {
-            let Some(version) = sec.version.clone() else {
-                continue;
-            };
+        for (lang, sec) in manifest.iter() {
             let Some(backend) = self.registry.get(lang) else {
                 continue;
             };
             let paths = self.paths.clone();
-            let lang = lang.clone();
+            let lang = lang.to_string();
+            let version = sec.version.clone();
             let opts = InstallOpts {
                 distribution: sec.distribution.clone(),
             };
@@ -110,16 +94,16 @@ impl<'a> Orchestrator<'a> {
     /// toolchain is already installed.
     pub async fn install_tools(
         &self,
-        manifest: &Manifest,
+        manifest: &PinnedManifest,
         lock: &mut Lock,
         frozen: bool,
         client: &reqwest::Client,
     ) -> Result<Vec<(String, LockedTool)>> {
         // Collect (lang, name, spec) tuples first.
         let mut planned: Vec<(String, String, ToolSpec)> = Vec::new();
-        for (lang, sec) in &manifest.languages {
+        for (lang, sec) in manifest.iter() {
             for (name, spec) in &sec.tools {
-                planned.push((lang.clone(), name.clone(), spec.clone()));
+                planned.push((lang.to_string(), name.clone(), spec.clone()));
             }
         }
         if planned.is_empty() {
@@ -175,9 +159,8 @@ impl<'a> Orchestrator<'a> {
                 continue;
             };
             let toolchain_version = manifest
-                .languages
                 .get(&lang)
-                .and_then(|s| s.version.clone())
+                .map(|s| s.version.clone())
                 .ok_or_else(|| anyhow!("no [{lang}] version pinned for tool '{}'", r.name))?;
             let paths = self.paths.clone();
             let r_clone = r.clone();
@@ -195,7 +178,7 @@ impl<'a> Orchestrator<'a> {
         for (lang, locked) in &installed {
             let entry = lock.backends.entry(lang.clone()).or_default();
             if entry.version.is_empty() {
-                if let Some(v) = manifest.languages.get(lang).and_then(|s| s.version.clone()) {
+                if let Some(v) = manifest.get(lang).map(|s| s.version.clone()) {
                     entry.version = v;
                 }
             }
@@ -208,11 +191,10 @@ impl<'a> Orchestrator<'a> {
 
     /// Drop tools that are in the lock but no longer pinned in the
     /// manifest. Returns the number removed.
-    pub fn prune_stale_tools(&self, manifest: &Manifest, lock: &mut Lock) -> usize {
+    pub fn prune_stale_tools(&self, manifest: &PinnedManifest, lock: &mut Lock) -> usize {
         let mut removed = 0usize;
         for (lang, entry) in lock.backends.iter_mut() {
             let pinned: std::collections::HashSet<&str> = manifest
-                .languages
                 .get(lang)
                 .map(|s| s.tools.keys().map(|k| k.as_str()).collect())
                 .unwrap_or_default();
@@ -226,13 +208,10 @@ impl<'a> Orchestrator<'a> {
     /// Refresh `LockedBackend.version` (and `distribution`, when set)
     /// for every language in the manifest so the lock's toolchain pins
     /// reflect the manifest after install.
-    pub fn sync_toolchain_versions(&self, manifest: &Manifest, lock: &mut Lock) {
-        for (lang, sec) in &manifest.languages {
-            let Some(v) = sec.version.clone() else {
-                continue;
-            };
-            let entry = lock.backends.entry(lang.clone()).or_default();
-            entry.version = v;
+    pub fn sync_toolchain_versions(&self, manifest: &PinnedManifest, lock: &mut Lock) {
+        for (lang, sec) in manifest.iter() {
+            let entry = lock.backends.entry(lang.to_string()).or_default();
+            entry.version = sec.version.clone();
             entry.distribution = sec.distribution.clone().unwrap_or_default();
         }
     }
@@ -243,7 +222,7 @@ impl<'a> Orchestrator<'a> {
     /// pin shouldn't block Go tools from installing.
     pub async fn sync(
         &self,
-        manifest: &Manifest,
+        manifest: &PinnedManifest,
         lock: &mut Lock,
         frozen: bool,
         client: &reqwest::Client,
@@ -278,7 +257,10 @@ impl<'a> Orchestrator<'a> {
         )
     }
 
-    /// Install + lock a single tool.
+    /// Install + lock a single tool. Mutates the **raw** `Manifest`
+    /// because a successful add_tool needs to write the new pin back
+    /// to qusp.toml; the caller can re-validate to a `PinnedManifest`
+    /// after if needed.
     pub async fn add_tool(
         &self,
         manifest: &mut Manifest,
