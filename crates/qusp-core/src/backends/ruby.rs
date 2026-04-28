@@ -11,6 +11,17 @@ use async_trait::async_trait;
 
 use crate::backend::*;
 
+/// Pull the inner `reqwest::Client` out of an HttpFetcher for rv-core's
+/// `&reqwest::Client`-typed entry points. See go.rs for the rationale.
+fn require_reqwest(http: &dyn crate::effects::HttpFetcher) -> Result<&reqwest::Client> {
+    http.as_reqwest_client().ok_or_else(|| {
+        anyhow::anyhow!(
+            "ruby backend requires a real reqwest::Client (LiveHttp); \
+             the supplied HttpFetcher impl doesn't provide one"
+        )
+    })
+}
+
 pub struct RubyBackend;
 
 #[async_trait]
@@ -79,15 +90,11 @@ impl Backend for RubyBackend {
 
     async fn resolve_tool(
         &self,
-        _http: &dyn crate::effects::HttpFetcher,
+        http: &dyn crate::effects::HttpFetcher,
         name: &str,
         spec: &ToolSpec,
     ) -> Result<ResolvedTool> {
-        // rv-core's resolver expects a reqwest::Client; build a local one
-        // for now. Phase 3.5 will migrate this through the HttpFetcher trait.
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("qusp-ruby/", env!("CARGO_PKG_VERSION")))
-            .build()?;
+        let client = require_reqwest(http)?;
         let rv_spec = match spec {
             ToolSpec::Short(v) => rv_core::project::ToolSpec::Short(v.clone()),
             ToolSpec::Long {
@@ -100,7 +107,7 @@ impl Backend for RubyBackend {
                 bin: bin.clone(),
             },
         };
-        let r = rv_core::tool::resolve(&client, name, &rv_spec).await?;
+        let r = rv_core::tool::resolve(client, name, &rv_spec).await?;
         Ok(ResolvedTool {
             name: r.name,
             package: r.gem,

@@ -288,16 +288,6 @@ impl Backend for PythonBackend {
         )
     }
 
-    async fn install_tool(
-        &self,
-        _: &AnyvPaths,
-        _http: &dyn crate::effects::HttpFetcher,
-        _toolchain_version: &str,
-        _resolved: &ResolvedTool,
-    ) -> Result<LockedTool> {
-        bail!("Python tool routing through uv arrives in v0.2.0.")
-    }
-
     fn tool_bin_path(&self, _: &AnyvPaths, locked: &LockedTool) -> PathBuf {
         PathBuf::from(&locked.bin)
     }

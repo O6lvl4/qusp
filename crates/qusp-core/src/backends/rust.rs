@@ -249,16 +249,6 @@ impl Backend for RustBackend {
         )
     }
 
-    async fn install_tool(
-        &self,
-        _: &AnyvPaths,
-        _http: &dyn crate::effects::HttpFetcher,
-        _toolchain_version: &str,
-        _resolved: &ResolvedTool,
-    ) -> Result<LockedTool> {
-        bail!("Rust backend does not install tools — see resolve_tool for guidance.")
-    }
-
     fn tool_bin_path(&self, _: &AnyvPaths, locked: &LockedTool) -> PathBuf {
         PathBuf::from(&locked.bin)
     }

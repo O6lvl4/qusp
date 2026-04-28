@@ -11,6 +11,19 @@ use async_trait::async_trait;
 
 use crate::backend::*;
 
+/// Pull the inner `reqwest::Client` out of an HttpFetcher so it can
+/// be passed to gv-core's `&reqwest::Client`-typed entry points.
+/// Production (`LiveHttp`) returns Some; mocks return None and the
+/// go backend can't be unit-tested through gv-core in that case.
+fn require_reqwest(http: &dyn crate::effects::HttpFetcher) -> Result<&reqwest::Client> {
+    http.as_reqwest_client().ok_or_else(|| {
+        anyhow::anyhow!(
+            "go backend requires a real reqwest::Client (LiveHttp); \
+             the supplied HttpFetcher impl doesn't provide one"
+        )
+    })
+}
+
 pub struct GoBackend;
 
 #[async_trait]
@@ -42,18 +55,16 @@ impl Backend for GoBackend {
         _qusp_paths: &AnyvPaths,
         version: &str,
         _opts: &InstallOpts,
-        _http: &dyn crate::effects::HttpFetcher,
+        http: &dyn crate::effects::HttpFetcher,
     ) -> Result<InstallReport> {
         let paths = gv_core::paths::discover()?;
         paths.ensure_dirs()?;
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("qusp-go/", env!("CARGO_PKG_VERSION")))
-            .build()?;
+        let client = require_reqwest(http)?;
         let platform = gv_core::Platform::detect()?;
         let normalized = gv_core::release::normalize_version(version);
         let installer = gv_core::install::Installer {
             paths: &paths,
-            client: &client,
+            client,
             platform,
         };
         let report = installer.install(&normalized).await?;
@@ -82,23 +93,19 @@ impl Backend for GoBackend {
         gv_core::resolve::list_installed(&paths)
     }
 
-    async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("qusp-go/", env!("CARGO_PKG_VERSION")))
-            .build()?;
-        let releases = gv_core::release::fetch_index(&client).await?;
+    async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
+        let client = require_reqwest(http)?;
+        let releases = gv_core::release::fetch_index(client).await?;
         Ok(releases.iter().map(|r| r.version.clone()).collect())
     }
 
     async fn resolve_tool(
         &self,
-        _http: &dyn crate::effects::HttpFetcher,
+        http: &dyn crate::effects::HttpFetcher,
         name: &str,
         spec: &ToolSpec,
     ) -> Result<ResolvedTool> {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("qusp-go/", env!("CARGO_PKG_VERSION")))
-            .build()?;
+        let client = require_reqwest(http)?;
         let gv_spec = match spec {
             ToolSpec::Short(v) => gv_core::project::ToolSpec::Short(v.clone()),
             ToolSpec::Long {
@@ -111,7 +118,7 @@ impl Backend for GoBackend {
                 bin: bin.clone(),
             },
         };
-        let r = gv_core::tool::resolve(&client, name, &gv_spec).await?;
+        let r = gv_core::tool::resolve(client, name, &gv_spec).await?;
         Ok(ResolvedTool {
             name: r.name,
             package: r.package,
@@ -128,6 +135,8 @@ impl Backend for GoBackend {
         toolchain_version: &str,
         resolved: &ResolvedTool,
     ) -> Result<LockedTool> {
+        // gv_core::tool::install does not take a client (uses spawn_blocking
+        // for `go install`). HttpFetcher param is unused here.
         let paths = gv_core::paths::discover()?;
         let gv_resolved = gv_core::tool::ResolvedTool {
             name: resolved.name.clone(),

@@ -23,6 +23,15 @@ pub trait HttpFetcher: Send + Sync {
     async fn get_text(&self, url: &str) -> Result<String>;
     async fn get_bytes(&self, url: &str) -> Result<Bytes>;
     async fn get_text_authenticated(&self, url: &str) -> Result<String>;
+
+    /// Escape hatch: backends that pass through to libraries which
+    /// still want a raw `reqwest::Client` (gv-core / rv-core) call
+    /// this. `LiveHttp` returns its inner client. Mocks return `None`,
+    /// which is the right shape — those backends can't be unit-tested
+    /// with MockHttp until upstream learns about HttpFetcher.
+    fn as_reqwest_client(&self) -> Option<&reqwest::Client> {
+        None
+    }
 }
 
 /// Production implementation backed by reqwest.
@@ -95,6 +104,10 @@ impl HttpFetcher for LiveHttp {
             .with_context(|| format!("response error for {url}"))?
             .text()
             .await?)
+    }
+
+    fn as_reqwest_client(&self) -> Option<&reqwest::Client> {
+        Some(&self.client)
     }
 }
 

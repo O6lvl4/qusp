@@ -167,21 +167,34 @@ pub trait Backend: Send + Sync {
     async fn list_remote(&self, http: &dyn HttpFetcher) -> Result<Vec<String>>;
 
     /// Resolve a tool spec to a concrete version + canonical metadata.
+    /// Default: bail with a generic "this backend doesn't manage tools"
+    /// message. Backends with a curated registry override.
     async fn resolve_tool(
         &self,
-        http: &dyn HttpFetcher,
+        _http: &dyn HttpFetcher,
         name: &str,
-        spec: &ToolSpec,
-    ) -> Result<ResolvedTool>;
+        _spec: &ToolSpec,
+    ) -> Result<ResolvedTool> {
+        anyhow::bail!(
+            "{} backend doesn't manage qusp-side tools; '{name}' has no install path here",
+            self.id()
+        )
+    }
 
-    /// Install a tool against the given toolchain version.
+    /// Install a tool against the given toolchain version. Default
+    /// is the same "no tools" stance as `resolve_tool`.
     async fn install_tool(
         &self,
-        paths: &Paths,
-        http: &dyn HttpFetcher,
-        toolchain_version: &str,
-        resolved: &ResolvedTool,
-    ) -> Result<LockedTool>;
+        _paths: &Paths,
+        _http: &dyn HttpFetcher,
+        _toolchain_version: &str,
+        _resolved: &ResolvedTool,
+    ) -> Result<LockedTool> {
+        anyhow::bail!(
+            "{} backend doesn't install tools — see resolve_tool for guidance",
+            self.id()
+        )
+    }
 
     /// Where the installed binary lives. Used by `qusp run` and `qusp which`.
     fn tool_bin_path(&self, paths: &Paths, locked: &LockedTool) -> PathBuf;
