@@ -44,12 +44,34 @@ impl<'a> Orchestrator<'a> {
         Self { registry, paths }
     }
 
+    /// Validate cross-backend requirements declared via `Backend::requires`.
+    /// Errors before any install runs if a dependency is missing — e.g.
+    /// `[kotlin]` pinned without `[java]` is caught here, not after a
+    /// kotlin install gets halfway through.
+    pub fn validate_requires(&self, manifest: &Manifest) -> Result<()> {
+        for lang in manifest.languages.keys() {
+            let Some(backend) = self.registry.get(lang) else {
+                continue;
+            };
+            for required in backend.requires() {
+                if !manifest.languages.contains_key(*required) {
+                    bail!(
+                        "[{lang}] requires [{required}] to be pinned in qusp.toml — \
+                         add a [{required}] section with a version before installing {lang}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Install every (lang, version) declared in the manifest. Runs in
     /// parallel across backends. Threads each section's `distribution`
     /// into the backend's `InstallOpts`. Per-backend failures are
     /// **collected, not propagated** — one broken backend doesn't kill
     /// the rest. The caller decides whether the partial set is OK.
     pub async fn install_toolchains(&self, manifest: &Manifest) -> Result<InstallToolchainsResult> {
+        self.validate_requires(manifest)?;
         let mut futs = Vec::new();
         for (lang, sec) in &manifest.languages {
             let Some(version) = sec.version.clone() else {

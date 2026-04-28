@@ -1,4 +1,4 @@
-//! qusp CLI — v0.8.1.
+//! qusp CLI — v0.9.0.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
@@ -229,6 +229,7 @@ fn build_registry() -> BackendRegistry {
     r.register(Arc::new(backends::java::JavaBackend));
     r.register(Arc::new(backends::rust::RustBackend));
     r.register(Arc::new(backends::bun::BunBackend));
+    r.register(Arc::new(backends::kotlin::KotlinBackend));
     r
 }
 
@@ -885,6 +886,7 @@ fn cmd_init(r: &BackendRegistry, langs: Option<Vec<String>>, force: bool) -> Res
                 "deno" => "2.0.0",
                 "bun" => "1.2.0",
                 "java" => "21",
+                "kotlin" => "2.1.20",
                 "rust" => "1.85.0",
                 _ => "<version>",
             };
@@ -911,6 +913,7 @@ fn cmd_init(r: &BackendRegistry, langs: Option<Vec<String>>, force: bool) -> Res
                 "deno" => "2.0.0",
                 "bun" => "1.2.0",
                 "java" => "21",
+                "kotlin" => "2.1.20",
                 "rust" => "1.85.0",
                 _ => "<version>",
             };

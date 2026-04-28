@@ -93,6 +93,7 @@ $ which python
 | **bun** | oven-sh/bun releases | sha256 (SHASUMS256.txt) | toolchain only (use bun's own `install`) |
 | **java** | Foojay disco API (Temurin/Corretto/Zulu/GraalVM CE) | sha256 | mvn (sha512), gradle (sha256) |
 | **rust** | static.rust-lang.org (rustup CDN) | sha256 | use `cargo install` / `cargo binstall` |
+| **kotlin** | JetBrains/kotlin GitHub releases | sha256 | toolchain only (Gradle drives plugins). **requires `[java]`** |
 
 Every install **verifies a publisher-published hash** before extracting.
 Java's checksums come from Foojay's normalized API; Maven's are sha512;

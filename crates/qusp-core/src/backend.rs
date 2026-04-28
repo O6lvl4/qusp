@@ -126,6 +126,17 @@ pub trait Backend: Send + Sync {
         false
     }
 
+    /// Other backend ids this backend depends on at run time. Kotlin
+    /// requires Java; Scala (future) requires Java; future Clojure
+    /// requires Java. Default empty — most backends are self-contained.
+    /// The orchestrator validates that every required backend is also
+    /// pinned in the manifest before any install runs. Cross-backend
+    /// envs merge automatically via `build_run_env` since the
+    /// orchestrator already calls each pinned backend's env builder.
+    fn requires(&self) -> &[&'static str] {
+        &[]
+    }
+
     /// Detect the version pinned by manifests. `Ok(None)` if no source
     /// pins one (caller falls through to global / latest installed).
     async fn detect_version(&self, cwd: &Path) -> Result<Option<DetectedVersion>>;
