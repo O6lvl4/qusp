@@ -260,8 +260,7 @@ impl Backend for DenoBackend {
 
     async fn list_remote(&self, client: &reqwest::Client) -> Result<Vec<String>> {
         let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=30");
-        let releases: Vec<GhRelease> = client
-            .get(&url)
+        let releases: Vec<GhRelease> = crate::http::gh_auth(client.get(&url))
             .header("Accept", "application/vnd.github+json")
             .header("User-Agent", "qusp")
             .send()

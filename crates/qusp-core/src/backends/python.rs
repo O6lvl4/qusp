@@ -115,8 +115,7 @@ impl Backend for PythonBackend {
         // Walk the most-recent releases until we find one with the requested
         // version (the asset filename's prefix, before `+<build_tag>`).
         let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=20");
-        let releases: Vec<GhRelease> = client
-            .get(&url)
+        let releases: Vec<GhRelease> = crate::http::gh_auth(client.get(&url))
             .header("Accept", "application/vnd.github+json")
             .send()
             .await?
@@ -316,8 +315,7 @@ impl Backend for PythonBackend {
 
     async fn list_remote(&self, client: &reqwest::Client) -> Result<Vec<String>> {
         let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=5");
-        let releases: Vec<GhRelease> = client
-            .get(&url)
+        let releases: Vec<GhRelease> = crate::http::gh_auth(client.get(&url))
             .header("Accept", "application/vnd.github+json")
             .header("User-Agent", "qusp")
             .send()
