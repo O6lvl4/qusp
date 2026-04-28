@@ -1,4 +1,4 @@
-//! qusp CLI — v0.6.0.
+//! qusp CLI — v0.7.0.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
@@ -96,6 +96,26 @@ enum Cmd {
         #[arg(long, value_enum, default_value_t = ShellKind::Auto)]
         shell: ShellKind,
     },
+    /// Scaffold a starter `qusp.toml` in the current directory.
+    Init {
+        /// Languages to include up front. Defaults to no languages
+        /// pinned (you `qusp install <lang> <version>` to add them).
+        #[arg(long, value_delimiter = ',')]
+        langs: Option<Vec<String>>,
+        /// Overwrite an existing qusp.toml without asking.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Report toolchains/tools that have newer versions upstream than
+    /// what's recorded in qusp.lock.
+    Outdated,
+    /// In-place self-update against the latest GitHub release. Verifies
+    /// sha256 before atomic-replacing the running binary.
+    SelfUpdate {
+        /// Don't write anything — just report whether an update exists.
+        #[arg(long)]
+        check: bool,
+    },
     /// Show the resolved multi-language environment.
     Tree,
     /// Print a gv/uv-style health check.
@@ -187,6 +207,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::X { argv } => cmd_x(&registry, &paths, argv).await,
         Cmd::Shellenv { shell, root } => cmd_shellenv(&registry, &paths, shell, root),
         Cmd::Hook { shell } => cmd_hook(shell),
+        Cmd::Init { langs, force } => cmd_init(&registry, langs, force),
+        Cmd::Outdated => cmd_outdated(&registry).await,
+        Cmd::SelfUpdate { check } => cmd_self_update(check).await,
         Cmd::List { lang, remote } => cmd_list(&registry, &paths, &lang, remote).await,
         Cmd::Current { lang } => cmd_current(&registry, lang.as_deref()).await,
         Cmd::Tree => cmd_tree(&registry, &paths).await,
@@ -204,6 +227,8 @@ fn build_registry() -> BackendRegistry {
     r.register(Arc::new(backends::node::NodeBackend));
     r.register(Arc::new(backends::deno::DenoBackend));
     r.register(Arc::new(backends::java::JavaBackend));
+    r.register(Arc::new(backends::rust::RustBackend));
+    r.register(Arc::new(backends::bun::BunBackend));
     r
 }
 
@@ -802,6 +827,204 @@ fn sh_quote_fish(s: &str) -> String {
 
 fn pwsh_escape(s: &str) -> String {
     s.replace('`', "``").replace('"', "`\"").replace('$', "`$")
+}
+
+fn cmd_init(r: &BackendRegistry, langs: Option<Vec<String>>, force: bool) -> Result<ExitCode> {
+    let cwd = std::env::current_dir()?;
+    let target = cwd.join("qusp.toml");
+    if target.exists() && !force {
+        bail!(
+            "qusp.toml already exists at {} — pass --force to overwrite",
+            target.display()
+        );
+    }
+    let mut out = String::new();
+    out.push_str("# qusp.toml — multi-language toolchain manifest.\n");
+    out.push_str(
+        "# Pin one section per language; `qusp install` (no args) installs them all in parallel.\n",
+    );
+    out.push_str("# https://github.com/O6lvl4/qusp\n\n");
+    let requested: Vec<String> = langs.unwrap_or_default();
+    if requested.is_empty() {
+        out.push_str("# Examples (uncomment + adjust):\n");
+        for id in r.ids() {
+            let example = match id {
+                "go" => "1.26.2",
+                "ruby" => "3.4.7",
+                "python" => "3.13.0",
+                "node" => "22.9.0",
+                "deno" => "2.0.0",
+                "bun" => "1.2.0",
+                "java" => "21",
+                "rust" => "1.85.0",
+                _ => "<version>",
+            };
+            out.push_str(&format!("# [{id}]\n"));
+            out.push_str(&format!("# version = \"{example}\"\n"));
+            if id == "java" {
+                out.push_str("# distribution = \"temurin\"\n");
+            }
+            out.push('\n');
+        }
+    } else {
+        for id in &requested {
+            if r.get(id).is_none() {
+                bail!(
+                    "unknown language '{id}' (known: {})",
+                    r.ids().collect::<Vec<_>>().join(", ")
+                );
+            }
+            let example = match id.as_str() {
+                "go" => "1.26.2",
+                "ruby" => "3.4.7",
+                "python" => "3.13.0",
+                "node" => "22.9.0",
+                "deno" => "2.0.0",
+                "bun" => "1.2.0",
+                "java" => "21",
+                "rust" => "1.85.0",
+                _ => "<version>",
+            };
+            out.push_str(&format!("[{id}]\n"));
+            out.push_str(&format!("version = \"{example}\"\n"));
+            if id == "java" {
+                out.push_str("distribution = \"temurin\"\n");
+            }
+            out.push('\n');
+        }
+    }
+    std::fs::write(&target, out)?;
+    say!("{} wrote {}", success_mark(), target.display());
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn cmd_outdated(r: &BackendRegistry) -> Result<ExitCode> {
+    let cwd = std::env::current_dir()?;
+    let root = manifest::find_root(&cwd)
+        .ok_or_else(|| anyhow!("no qusp.toml found above {}", cwd.display()))?;
+    let lock = lock::Lock::load(&root).unwrap_or_else(|_| lock::Lock::empty());
+    if lock.backends.is_empty() {
+        say!(
+            "{}",
+            dim("(qusp.lock has no toolchain entries — run `qusp sync` first)")
+        );
+        return Ok(ExitCode::SUCCESS);
+    }
+    let client = http_client()?;
+    let mut hits = 0usize;
+    for (lang, entry) in &lock.backends {
+        let Some(backend) = r.get(lang) else { continue };
+        if entry.version.is_empty() {
+            continue;
+        }
+        let pb = spinner(format!("checking {lang}"));
+        let remote = backend.list_remote(&client).await;
+        pb.finish_and_clear();
+        let Ok(remote) = remote else {
+            println!(
+                " {} {}: {}",
+                color_yellow("?"),
+                color_cyan(lang),
+                dim("could not query upstream")
+            );
+            continue;
+        };
+        // First entry is the newest by convention. Strip annotations
+        // like " (LTS)" / " (current stable)".
+        let latest_raw = remote.first().cloned().unwrap_or_default();
+        let latest = latest_raw
+            .split_whitespace()
+            .next()
+            .unwrap_or(&latest_raw)
+            .to_string();
+        if latest.is_empty() {
+            continue;
+        }
+        let pinned = entry.version.trim();
+        if version_loose_eq(pinned, &latest) {
+            println!(
+                " {} {} {}",
+                color_green("="),
+                color_cyan(lang),
+                color_bold(pinned),
+            );
+        } else {
+            hits += 1;
+            println!(
+                " {} {} {} → {}",
+                color_yellow("↑"),
+                color_cyan(lang),
+                color_bold(pinned),
+                color_bold(&latest),
+            );
+        }
+    }
+    if hits == 0 {
+        say!("\n{} all toolchains at latest", success_mark());
+    } else {
+        say!(
+            "\n{} {} toolchain{} have newer upstream versions. \
+             Bump qusp.toml and run `qusp sync` to apply.",
+            color_yellow("!"),
+            hits,
+            if hits == 1 { "" } else { "s" }
+        );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn version_loose_eq(a: &str, b: &str) -> bool {
+    fn norm(s: &str) -> String {
+        s.trim()
+            .strip_prefix('v')
+            .unwrap_or(s)
+            .trim_start_matches("go")
+            .to_string()
+    }
+    norm(a) == norm(b)
+}
+
+async fn cmd_self_update(check: bool) -> Result<ExitCode> {
+    let updater = anyv_core::selfupdate::SelfUpdate {
+        repo: "O6lvl4/qusp",
+        bin_name: "qusp",
+        current_version: env!("CARGO_PKG_VERSION"),
+    };
+    let client = http_client()?;
+    let pb = spinner("checking github.com/O6lvl4/qusp/releases/latest");
+    let info = updater.run(&client, check).await?;
+    pb.finish_and_clear();
+    use anyv_core::selfupdate::Outcome;
+    match info.outcome {
+        Outcome::AlreadyUpToDate => {
+            say!(
+                "{} qusp v{} is the latest release",
+                success_mark(),
+                info.current
+            );
+        }
+        Outcome::NewerAvailable => {
+            say!(
+                "{} qusp v{} is available (you have v{}). Run without `--check` to install.",
+                color_yellow("↑"),
+                info.latest,
+                info.current
+            );
+        }
+        Outcome::Updated => {
+            say!(
+                "{} qusp updated v{} → v{} at {}",
+                success_mark(),
+                info.current,
+                info.latest,
+                info.binary_path
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default()
+            );
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 async fn cmd_list(
