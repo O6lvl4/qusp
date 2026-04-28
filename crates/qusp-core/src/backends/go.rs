@@ -21,6 +21,9 @@ impl Backend for GoBackend {
     fn manifest_files(&self) -> &[&'static str] {
         &["go.mod", ".go-version"]
     }
+    fn knows_tool(&self, name: &str) -> bool {
+        gv_core::registry::lookup(name).is_some()
+    }
 
     async fn detect_version(&self, cwd: &Path) -> Result<Option<DetectedVersion>> {
         let paths = gv_core::paths::discover()?;
@@ -120,10 +123,10 @@ impl Backend for GoBackend {
             bin: resolved.bin.clone(),
             module_hash: resolved.upstream_hash.clone(),
         };
+        let canonical = gv_core::release::normalize_version(toolchain_version);
         let r = tokio::task::spawn_blocking({
             let paths = paths.clone();
-            let v = toolchain_version.to_string();
-            move || gv_core::tool::install(&paths, &v, &gv_resolved)
+            move || gv_core::tool::install(&paths, &canonical, &gv_resolved)
         })
         .await
         .map_err(|e| anyhow::anyhow!("install task panicked: {e}"))??;
@@ -156,7 +159,8 @@ impl Backend for GoBackend {
 
     fn build_run_env(&self, _qusp_paths: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
         let paths = gv_core::paths::discover()?;
-        let goroot = paths.version_dir(version);
+        let canonical = gv_core::release::normalize_version(version);
+        let goroot = paths.version_dir(&canonical);
         let mut env = std::collections::BTreeMap::new();
         env.insert("GOROOT".into(), goroot.to_string_lossy().into_owned());
         env.insert("GOTOOLCHAIN".into(), "local".into());

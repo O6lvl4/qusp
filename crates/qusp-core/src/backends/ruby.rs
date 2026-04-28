@@ -21,6 +21,9 @@ impl Backend for RubyBackend {
     fn manifest_files(&self) -> &[&'static str] {
         &["Gemfile", ".ruby-version"]
     }
+    fn knows_tool(&self, name: &str) -> bool {
+        rv_core::registry::lookup(name).is_some()
+    }
 
     async fn detect_version(&self, cwd: &Path) -> Result<Option<DetectedVersion>> {
         let paths = rv_core::paths::discover()?;

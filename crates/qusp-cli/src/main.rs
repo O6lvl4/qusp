@@ -1,17 +1,20 @@
-//! qusp CLI — v0.0.1.
+//! qusp CLI — v0.2.0.
 //!
-//! Ships Go (via `gv`) and Python (via `uv`) backends as subprocess
-//! wrappers. Proves the multi-language manifest end-to-end while we
-//! incubate native ruby/terraform/deno/node/java backends.
+//! Native Go/Ruby/Python backends + the orchestrator: `qusp install`
+//! (no args = parallel install of every language pinned in qusp.toml),
+//! `qusp sync [--frozen]`, `qusp add tool` (auto-routed via each
+//! backend's static registry), `qusp run` (merges PATH + GOROOT +
+//! GEM_HOME + … across backends), `quspx` (ephemeral run via argv[0]
+//! dispatch).
 
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
 use anyv_core::presentation::{
-    bold as color_bold, cyan as color_cyan, dim, set_quiet, spinner, success_mark,
-    yellow as color_yellow,
+    bold as color_bold, cyan as color_cyan, dim, format_duration_ms, green as color_green,
+    set_quiet, spinner, success_mark, yellow as color_yellow,
 };
 use anyv_core::say;
 use clap::{Parser, Subcommand};
@@ -37,8 +40,35 @@ struct Cli {
 enum Cmd {
     /// List the languages this build of qusp supports.
     Backends,
-    /// Install a toolchain version (e.g. `qusp install go 1.26.2`).
-    Install { lang: String, version: String },
+    /// Install toolchains. With no args, installs everything pinned in
+    /// qusp.toml (in parallel). With `<lang> <version>`, installs just one.
+    Install {
+        lang: Option<String>,
+        version: Option<String>,
+    },
+    /// Reconcile installs with qusp.toml + qusp.lock. With --frozen,
+    /// refuses to update qusp.lock and uses lock-as-truth.
+    Sync {
+        #[arg(long)]
+        frozen: bool,
+    },
+    /// Pin and install a tool. Auto-routes to the backend whose registry
+    /// recognizes the name.
+    Add {
+        #[command(subcommand)]
+        target: AddCmd,
+    },
+    /// Run a command using the resolved multi-language environment.
+    Run {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 1..)]
+        argv: Vec<String>,
+    },
+    /// Ephemeral run. argv[0]=`quspx` dispatches into this. Resolves, installs
+    /// (or reuses), executes — without touching qusp.toml/qusp.lock.
+    X {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 1..)]
+        argv: Vec<String>,
+    },
     /// List installed toolchains, or remote ones with --remote.
     List {
         lang: String,
@@ -61,6 +91,12 @@ enum Cmd {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+}
+
+#[derive(Debug, Subcommand)]
+enum AddCmd {
+    /// `qusp add tool gopls` — auto-detected as a Go tool.
+    Tool { spec: String },
 }
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
@@ -96,7 +132,13 @@ async fn run(cli: Cli) -> Result<ExitCode> {
 
     match cli.cmd {
         Cmd::Backends => cmd_backends(&registry),
-        Cmd::Install { lang, version } => cmd_install(&registry, &paths, &lang, &version).await,
+        Cmd::Install { lang, version } => cmd_install(&registry, &paths, lang, version).await,
+        Cmd::Sync { frozen } => cmd_sync(&registry, &paths, frozen).await,
+        Cmd::Add { target } => match target {
+            AddCmd::Tool { spec } => cmd_add_tool(&registry, &paths, &spec).await,
+        },
+        Cmd::Run { argv } => cmd_run(&registry, &paths, argv),
+        Cmd::X { argv } => cmd_x(&registry, &paths, argv).await,
         Cmd::List { lang, remote } => cmd_list(&registry, &paths, &lang, remote).await,
         Cmd::Current { lang } => cmd_current(&registry, lang.as_deref()).await,
         Cmd::Tree => cmd_tree(&registry, &paths).await,
@@ -125,20 +167,261 @@ fn cmd_backends(r: &BackendRegistry) -> Result<ExitCode> {
 async fn cmd_install(
     r: &BackendRegistry,
     paths: &qusp_core::Paths,
-    lang: &str,
-    version: &str,
+    lang: Option<String>,
+    version: Option<String>,
 ) -> Result<ExitCode> {
-    let backend = r
-        .get(lang)
-        .ok_or_else(|| anyhow!("unknown language: {lang}"))?;
-    let pb = spinner(format!("installing {lang} {version}"));
-    let report = backend.install(paths, version).await?;
-    pb.finish_and_clear();
-    say!("{} {lang} {} installed", success_mark(), report.version);
-    if !report.install_dir.as_os_str().is_empty() {
-        say!("  → {}", report.install_dir.display());
+    if let (Some(lang), Some(version)) = (lang.as_ref(), version.as_ref()) {
+        let backend = r
+            .get(lang)
+            .ok_or_else(|| anyhow!("unknown language: {lang}"))?;
+        let pb = spinner(format!("installing {lang} {version}"));
+        let report = backend.install(paths, version).await?;
+        pb.finish_and_clear();
+        say!("{} {lang} {} installed", success_mark(), report.version);
+        if !report.install_dir.as_os_str().is_empty() {
+            say!("  → {}", report.install_dir.display());
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+    if lang.is_some() || version.is_some() {
+        bail!("`qusp install` takes either no args (install everything in qusp.toml) or `<lang> <version>`");
+    }
+    // No args → install everything in the manifest, parallel across backends.
+    let cwd = std::env::current_dir()?;
+    let root = manifest::find_root(&cwd)
+        .ok_or_else(|| anyhow!("no qusp.toml found above {}", cwd.display()))?;
+    let m = manifest::load(&root)?;
+    if m.languages.is_empty() {
+        say!("{}", dim("(qusp.toml has no languages pinned)"));
+        return Ok(ExitCode::SUCCESS);
+    }
+    let orch = qusp_core::orchestrator::Orchestrator::new(r, paths);
+    let started = std::time::Instant::now();
+    let summaries = orch.install_toolchains(&m).await?;
+    let elapsed = started.elapsed().as_millis();
+    say!(
+        "{} Installed {} toolchain{} in {}",
+        success_mark(),
+        summaries.len(),
+        if summaries.len() == 1 { "" } else { "s" },
+        format_duration_ms(elapsed)
+    );
+    for s in &summaries {
+        let mark = if s.already_present { dim("=") } else { color_green("+") };
+        let note = if s.already_present { dim("(already present)") } else { dim("(installed)") };
+        println!(" {mark} {} {} {note}", color_cyan(&s.lang), color_bold(&s.version));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+async fn cmd_sync(
+    r: &BackendRegistry,
+    paths: &qusp_core::Paths,
+    frozen: bool,
+) -> Result<ExitCode> {
+    let cwd = std::env::current_dir()?;
+    let root = manifest::find_root(&cwd)
+        .ok_or_else(|| anyhow!("no qusp.toml found above {}", cwd.display()))?;
+    let m = manifest::load(&root)?;
+    let mut lock = lock::Lock::load(&root)?;
+    let orch = qusp_core::orchestrator::Orchestrator::new(r, paths);
+    let client = http_client()?;
+    let started = std::time::Instant::now();
+    let summary = orch.sync(&m, &mut lock, frozen, &client).await?;
+    let elapsed = started.elapsed().as_millis();
+    say!(
+        "{} Synced {} toolchain{} + {} tool{} in {}",
+        success_mark(),
+        summary.langs_installed.len(),
+        if summary.langs_installed.len() == 1 { "" } else { "s" },
+        summary.tools_installed.len(),
+        if summary.tools_installed.len() == 1 { "" } else { "s" },
+        format_duration_ms(elapsed)
+    );
+    for s in &summary.langs_installed {
+        let mark = if s.already_present { dim("=") } else { color_green("+") };
+        println!(" {mark} {} {}", color_cyan(&s.lang), color_bold(&s.version));
+    }
+    for (lang, locked) in &summary.tools_installed {
+        println!(
+            " {} {}/{} {}",
+            color_green("+"),
+            color_cyan(lang),
+            color_bold(&locked.name),
+            dim(&locked.version)
+        );
+    }
+    if summary.tools_removed_from_lock > 0 {
+        println!(
+            " {} pruned {} stale lock entr{}",
+            dim("-"),
+            summary.tools_removed_from_lock,
+            if summary.tools_removed_from_lock == 1 { "y" } else { "ies" }
+        );
+    }
+    if !frozen {
+        lock.save(&root)?;
+        say!("{} wrote {}", success_mark(), root.join("qusp.lock").display());
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+async fn cmd_add_tool(
+    r: &BackendRegistry,
+    paths: &qusp_core::Paths,
+    spec: &str,
+) -> Result<ExitCode> {
+    let cwd = std::env::current_dir()?;
+    let root = manifest::find_root(&cwd)
+        .ok_or_else(|| anyhow!("no qusp.toml found above {}; run `qusp install <lang> <version>` and create one first", cwd.display()))?;
+    let mut m = manifest::load(&root)?;
+    let mut lock = lock::Lock::load(&root)?;
+    let (name, version) = match spec.rsplit_once('@') {
+        Some((n, v)) => (n.to_string(), v.to_string()),
+        None => (spec.to_string(), "latest".to_string()),
+    };
+    let client = http_client()?;
+    let orch = qusp_core::orchestrator::Orchestrator::new(r, paths);
+    let pb = spinner(format!("resolving {name}"));
+    let (lang, locked) = orch.add_tool(&mut m, &mut lock, &name, &version, &client).await?;
+    pb.finish_and_clear();
+    manifest::save(&root, &m)?;
+    lock.save(&root)?;
+    println!(
+        "{} routed to {} backend → {}@{}",
+        success_mark(),
+        color_cyan(&lang),
+        color_bold(&locked.name),
+        locked.version
+    );
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_run(
+    r: &BackendRegistry,
+    paths: &qusp_core::Paths,
+    argv: Vec<String>,
+) -> Result<ExitCode> {
+    if argv.is_empty() { bail!("usage: qusp run <cmd> [args...]"); }
+    let cwd = std::env::current_dir()?;
+    let root = manifest::find_root(&cwd);
+    let lock = match root.as_deref() {
+        Some(r) => lock::Lock::load(r).unwrap_or_else(|_| lock::Lock::empty()),
+        None => lock::Lock::empty(),
+    };
+    let cmd = &argv[0];
+    let orch = qusp_core::orchestrator::Orchestrator::new(r, paths);
+
+    // 1. Project-pinned tool? Prefer that backend's env.
+    let (exe, prefer_lang): (std::path::PathBuf, Option<String>) =
+        match orch.find_tool(&lock, cmd) {
+            Some((lang, _, bin)) if bin.exists() => (bin, Some(lang)),
+            _ => {
+                // 2. Maybe it's a toolchain binary like `go` or `python` or `ruby`.
+                // Iterate backends; whichever has a bin/<cmd> in its toolchain wins.
+                let mut found: Option<(std::path::PathBuf, String)> = None;
+                for (id, _backend) in r.iter() {
+                    let Some(entry) = lock.backends.get(id) else { continue; };
+                    if entry.version.is_empty() { continue; }
+                    // backend doesn't expose toolchain bin path directly here;
+                    // build_run_env's path_prepend[0] is conventionally the bin dir.
+                    let env = match _backend.build_run_env(paths, &entry.version, &cwd) {
+                        Ok(e) => e, Err(_) => continue,
+                    };
+                    if let Some(bin_dir) = env.path_prepend.first() {
+                        let candidate = bin_dir.join(cmd);
+                        if candidate.exists() {
+                            found = Some((candidate, id.to_string()));
+                            break;
+                        }
+                    }
+                }
+                match found {
+                    Some((p, id)) => (p, Some(id)),
+                    None => (std::path::PathBuf::from(cmd), None),
+                }
+            }
+        };
+
+    let env = orch.build_run_env(&lock, &cwd, prefer_lang.as_deref())?;
+    use std::process::Command;
+    let mut child = Command::new(&exe);
+    child.args(&argv[1..]);
+    let mut path_var = std::ffi::OsString::new();
+    for (i, p) in env.path_prepend.iter().enumerate() {
+        if i > 0 { path_var.push(":"); }
+        path_var.push(p);
+    }
+    if !path_var.is_empty() { path_var.push(":"); }
+    path_var.push(std::env::var_os("PATH").unwrap_or_default());
+    child.env("PATH", path_var);
+    for (k, v) in env.env { child.env(k, v); }
+    let status = child.status().map_err(|e| anyhow!("spawn {}: {e}", exe.display()))?;
+    Ok(ExitCode::from(status.code().unwrap_or(1) as u8))
+}
+
+async fn cmd_x(
+    r: &BackendRegistry,
+    paths: &qusp_core::Paths,
+    argv: Vec<String>,
+) -> Result<ExitCode> {
+    if argv.is_empty() { bail!("usage: qusp x <tool> [args...]   (or invoke as `quspx`)"); }
+    let cmd = &argv[0];
+    let rest = &argv[1..];
+
+    // Route the tool name to a backend.
+    let orch = qusp_core::orchestrator::Orchestrator::new(r, paths);
+    let (lang, backend) = orch.route_tool(cmd)?;
+
+    // Pick a toolchain version for this lang. Prefer manifest, fall back to
+    // backend.detect_version, fall back to latest installed.
+    let cwd = std::env::current_dir()?;
+    let toolchain_version = {
+        let root = manifest::find_root(&cwd);
+        let m_version = root
+            .as_deref()
+            .and_then(|r| manifest::load(r).ok())
+            .and_then(|m| m.languages.get(&lang).and_then(|s| s.version.clone()));
+        match m_version {
+            Some(v) => v,
+            None => match backend.detect_version(&cwd).await? {
+                Some(d) => d.version,
+                None => {
+                    let installed = backend.list_installed(paths).unwrap_or_default();
+                    installed.into_iter().next().ok_or_else(|| anyhow!(
+                        "no {lang} toolchain installed; run `qusp install {lang} <version>` first"
+                    ))?
+                }
+            },
+        }
+    };
+
+    let client = http_client()?;
+    let pb = spinner(format!("resolving {cmd}"));
+    let resolved = backend
+        .resolve_tool(&client, cmd, &qusp_core::backend::ToolSpec::Short("latest".into()))
+        .await?;
+    pb.finish_and_clear();
+    let pb = spinner(format!("ensuring {}@{} for ephemeral run", resolved.name, resolved.version));
+    let locked = backend.install_tool(paths, &toolchain_version, &resolved).await?;
+    pb.finish_and_clear();
+
+    let bin = backend.tool_bin_path(paths, &locked);
+    let env = backend.build_run_env(paths, &toolchain_version, &cwd)?;
+    use std::process::Command;
+    let mut child = Command::new(&bin);
+    child.args(rest);
+    let mut path_var = std::ffi::OsString::new();
+    for (i, p) in env.path_prepend.iter().enumerate() {
+        if i > 0 { path_var.push(":"); }
+        path_var.push(p);
+    }
+    if !path_var.is_empty() { path_var.push(":"); }
+    path_var.push(std::env::var_os("PATH").unwrap_or_default());
+    child.env("PATH", path_var);
+    for (k, v) in env.env { child.env(k, v); }
+    let status = child.status().map_err(|e| anyhow!("spawn {}: {e}", bin.display()))?;
+    Ok(ExitCode::from(status.code().unwrap_or(1) as u8))
 }
 
 async fn cmd_list(
@@ -253,33 +536,14 @@ fn cmd_doctor(r: &BackendRegistry, paths: &qusp_core::Paths) -> Result<ExitCode>
     println!("  config dir : {}", paths.config.display());
     println!("  cache dir  : {}", paths.cache.display());
     println!("  backends   : {}", r.ids().collect::<Vec<_>>().join(", "));
-    let gv = std::process::Command::new("gv")
-        .arg("--version")
-        .output()
-        .ok();
-    match gv {
-        Some(o) if o.status.success() => println!(
-            "  gv         : {}",
-            String::from_utf8_lossy(&o.stdout).trim()
-        ),
-        _ => println!(
-            "  gv         : {}",
-            color_yellow("MISSING — go backend will fail")
-        ),
-    }
-    let uv = std::process::Command::new("uv")
-        .arg("--version")
-        .output()
-        .ok();
-    match uv {
-        Some(o) if o.status.success() => println!(
-            "  uv         : {}",
-            String::from_utf8_lossy(&o.stdout).trim()
-        ),
-        _ => println!(
-            "  uv         : {}",
-            color_yellow("MISSING — python backend will fail")
-        ),
+    for (id, backend) in r.iter() {
+        let count = backend.list_installed(paths).map(|v| v.len()).unwrap_or(0);
+        let mark = if count > 0 {
+            color_green(&format!("{count} installed"))
+        } else {
+            color_yellow("none installed yet").to_string()
+        };
+        println!("  {:<10} : {mark}", color_cyan(id));
     }
     Ok(ExitCode::SUCCESS)
 }

@@ -9,6 +9,7 @@ pub mod backend;
 pub mod backends;
 pub mod lock;
 pub mod manifest;
+pub mod orchestrator;
 pub mod paths;
 pub mod registry;
 

@@ -109,6 +109,12 @@ pub trait Backend: Send + Sync {
     /// order. Used for project-root detection and version resolution.
     fn manifest_files(&self) -> &[&'static str];
 
+    /// Synchronous "is this tool name in my registry?" check. Used by
+    /// the orchestrator to route `qusp add tool <name>` to the right
+    /// backend without firing slow network calls. Default `false` —
+    /// backends with a known tool list override.
+    fn knows_tool(&self, _name: &str) -> bool { false }
+
     /// Detect the version pinned by manifests. `Ok(None)` if no source
     /// pins one (caller falls through to global / latest installed).
     async fn detect_version(&self, cwd: &Path) -> Result<Option<DetectedVersion>>;
