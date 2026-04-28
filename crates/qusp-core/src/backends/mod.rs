@@ -12,6 +12,7 @@ pub mod groovy;
 pub mod java;
 pub mod julia;
 pub mod kotlin;
+pub mod lua;
 pub mod node;
 pub mod python;
 pub mod ruby;

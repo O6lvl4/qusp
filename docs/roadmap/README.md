@@ -42,7 +42,7 @@
 
 | 項目 | コメント |
 |---|---|
-| [Lua / LuaJIT](on-hold/lua.md) | make build 単純、5.x major 並行 |
+| [LuaJIT](on-hold/luajit.md) | Lua 5.1 互換だが完全に別物。Lua 本体は v0.22.0 で先行出荷済 |
 | [PHP](on-hold/php.md) | php-build 利用、extension が地獄 |
 | [R](on-hold/r.md) | OS deps 重い、source build |
 | [Swift (server-side)](on-hold/swift.md) | Linux distro 別 tarball、PGP sig |
@@ -91,6 +91,7 @@
 | [Dart backend](done/dart.md) | v0.19.0 | Phase 4 |
 | [Scala 3 backend](done/scala.md) | v0.20.0 | Phase 4 |
 | [Clojure backend](done/clojure.md) | v0.21.0 | Phase 4 |
+| [Lua backend](done/lua.md) | v0.22.0 | Phase 4 |
 | [e2e test scenarios](done/e2e-tests.md) | scripts/e2e/* | Phase 1 |
 | [Benchmark vs mise](done/benchmark-vs-mise.md) — shim mode 4× 速い実数 | scripts/bench.sh | Phase 1 |
 
