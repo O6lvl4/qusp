@@ -88,6 +88,7 @@ impl Backend for GroovyBackend {
         version: &str,
         _opts: &InstallOpts,
         http: &dyn crate::effects::HttpFetcher,
+        progress: &dyn crate::effects::ProgressReporter,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -110,10 +111,12 @@ impl Backend for GroovyBackend {
         let expected = parse_sha256_sidecar(&sha_text)
             .ok_or_else(|| anyhow!("empty .sha256 for {asset}"))?;
 
+        let mut task = progress.start(&format!("downloading groovy {version}"), None);
         let bytes = http
-            .get_bytes(&asset_url)
+            .get_bytes_streaming(&asset_url, task.as_mut())
             .await
             .with_context(|| format!("download {asset_url}"))?;
+        task.finish(format!("downloaded groovy {version}"));
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let actual = hex::encode(hasher.finalize());

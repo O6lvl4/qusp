@@ -160,6 +160,7 @@ impl Backend for JavaBackend {
         version: &str,
         opts: &InstallOpts,
         http: &dyn crate::effects::HttpFetcher,
+        progress: &dyn crate::effects::ProgressReporter,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -240,10 +241,12 @@ impl Backend for JavaBackend {
         };
 
         // Step 3 — download.
+        let mut task = progress.start(&format!("downloading java {version}"), None);
         let bytes = http
-            .get_bytes(&d.direct_download_uri)
+            .get_bytes_streaming(&d.direct_download_uri, task.as_mut())
             .await
             .with_context(|| format!("download {}", d.direct_download_uri))?;
+        task.finish(format!("downloaded java {version}"));
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let actual = hex::encode(hasher.finalize());

@@ -92,6 +92,7 @@ impl Backend for KotlinBackend {
         version: &str,
         _opts: &InstallOpts,
         http: &dyn crate::effects::HttpFetcher,
+        progress: &dyn crate::effects::ProgressReporter,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -119,10 +120,12 @@ impl Backend for KotlinBackend {
             .ok_or_else(|| anyhow!("empty .sha256 for {asset}"))?
             .to_string();
 
+        let mut task = progress.start(&format!("downloading kotlin {v}"), None);
         let bytes = http
-            .get_bytes(&asset_url)
+            .get_bytes_streaming(&asset_url, task.as_mut())
             .await
             .with_context(|| format!("download {asset_url}"))?;
+        task.finish(format!("downloaded kotlin {v}"));
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let actual = hex::encode(hasher.finalize());

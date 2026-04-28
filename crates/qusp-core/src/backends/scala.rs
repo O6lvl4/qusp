@@ -104,6 +104,7 @@ impl Backend for ScalaBackend {
         version: &str,
         _opts: &InstallOpts,
         http: &dyn crate::effects::HttpFetcher,
+        progress: &dyn crate::effects::ProgressReporter,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -135,10 +136,12 @@ impl Backend for ScalaBackend {
         let expected = parse_sha256_sidecar(&sha_text)
             .ok_or_else(|| anyhow!("could not parse sha256 from sidecar for {asset}"))?;
 
+        let mut task = progress.start(&format!("downloading scala {version}"), None);
         let bytes = http
-            .get_bytes(&asset_url)
+            .get_bytes_streaming(&asset_url, task.as_mut())
             .await
             .with_context(|| format!("download {asset_url}"))?;
+        task.finish(format!("downloaded scala {version}"));
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let actual = hex::encode(hasher.finalize());

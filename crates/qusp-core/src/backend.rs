@@ -12,7 +12,7 @@ use anyv_core::Paths;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::effects::HttpFetcher;
+use crate::effects::{HttpFetcher, ProgressReporter};
 
 /// A version pinned by some manifest the backend understands.
 #[derive(Debug, Clone)]
@@ -147,13 +147,17 @@ pub trait Backend: Send + Sync {
     /// vendor-specific knobs (distribution, etc.); backends that don't
     /// need them ignore via `let _ = opts;`. `http` is the explicit
     /// HTTP effect — production wires in [`crate::effects::LiveHttp`],
-    /// tests inject a mock with canned responses.
+    /// tests inject a mock with canned responses. `progress` is the
+    /// progress effect — backends start a task before download/build
+    /// and finish it on success; tests / quiet mode wire in
+    /// [`crate::effects::NoopProgress`].
     async fn install(
         &self,
         paths: &Paths,
         version: &str,
         opts: &InstallOpts,
         http: &dyn HttpFetcher,
+        progress: &dyn ProgressReporter,
     ) -> Result<InstallReport>;
 
     /// Drop a toolchain version (does not touch tool installs that

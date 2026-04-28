@@ -1,4 +1,4 @@
-//! qusp CLI — v0.26.0.
+//! qusp CLI — v0.27.0.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
@@ -283,11 +283,15 @@ async fn cmd_install(
             .and_then(|root| manifest::load(&root).ok())
             .and_then(|m| m.languages.get(lang).cloned())
             .and_then(|s| s.distribution);
-        let pb = spinner(format!("installing {lang} {version}"));
+        // Backend's install method drives its own download/build
+        // progress via LiveProgress; no outer spinner needed (would
+        // race with the per-step bars).
         let opts = qusp_core::InstallOpts { distribution };
         let http = qusp_core::effects::LiveHttp::new(concat!("qusp/", env!("CARGO_PKG_VERSION")))?;
-        let report = backend.install(paths, version, &opts, &http).await?;
-        pb.finish_and_clear();
+        let progress = qusp_core::effects::LiveProgress::new();
+        let report = backend
+            .install(paths, version, &opts, &http, &progress)
+            .await?;
         say!("{} {lang} {} installed", success_mark(), report.version);
         if !report.install_dir.as_os_str().is_empty() {
             say!("  → {}", report.install_dir.display());

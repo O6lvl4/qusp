@@ -92,6 +92,7 @@ impl Backend for DenoBackend {
         version: &str,
         _opts: &InstallOpts,
         http: &dyn crate::effects::HttpFetcher,
+        progress: &dyn crate::effects::ProgressReporter,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -123,10 +124,12 @@ impl Backend for DenoBackend {
             .ok_or_else(|| anyhow!("empty .sha256sum response for {asset}"))?
             .to_string();
 
+        let mut task = progress.start(&format!("downloading deno {version}"), None);
         let bytes = http
-            .get_bytes(&asset_url)
+            .get_bytes_streaming(&asset_url, task.as_mut())
             .await
             .with_context(|| format!("download {asset_url}"))?;
+        task.finish(format!("downloaded deno {version}"));
 
         let cache_path = paths.cache.join(&asset);
         anyv_core::paths::ensure_dir(&paths.cache)?;

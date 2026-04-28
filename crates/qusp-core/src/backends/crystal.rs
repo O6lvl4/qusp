@@ -93,6 +93,7 @@ impl Backend for CrystalBackend {
         version: &str,
         _opts: &InstallOpts,
         http: &dyn crate::effects::HttpFetcher,
+        progress: &dyn crate::effects::ProgressReporter,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -130,10 +131,12 @@ impl Backend for CrystalBackend {
             )
         })?;
 
+        let mut task = progress.start(&format!("downloading crystal {version}"), None);
         let bytes = http
-            .get_bytes(&asset.browser_download_url)
+            .get_bytes_streaming(&asset.browser_download_url, task.as_mut())
             .await
             .with_context(|| format!("download {}", asset.browser_download_url))?;
+        task.finish(format!("downloaded crystal {version}"));
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let actual = hex::encode(hasher.finalize());

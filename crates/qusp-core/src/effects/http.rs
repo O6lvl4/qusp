@@ -17,12 +17,31 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures_util::StreamExt;
+
+use super::progress::ProgressTask;
 
 #[async_trait]
 pub trait HttpFetcher: Send + Sync {
     async fn get_text(&self, url: &str) -> Result<String>;
     async fn get_bytes(&self, url: &str) -> Result<Bytes>;
     async fn get_text_authenticated(&self, url: &str) -> Result<String>;
+
+    /// Streamed download with per-chunk progress callback. Default
+    /// impl just calls `get_bytes` and reports the full size at the
+    /// end (correct, but provides no real-time feedback). `LiveHttp`
+    /// overrides for actual chunk-level reporting using
+    /// `Content-Length` to set the bar total before the first byte.
+    async fn get_bytes_streaming(
+        &self,
+        url: &str,
+        task: &mut dyn ProgressTask,
+    ) -> Result<Bytes> {
+        let bytes = self.get_bytes(url).await?;
+        task.set_total(bytes.len() as u64);
+        task.advance(bytes.len() as u64);
+        Ok(bytes)
+    }
 
     /// Escape hatch: backends that pass through to libraries which
     /// still want a raw `reqwest::Client` (gv-core / rv-core) call
@@ -91,6 +110,32 @@ impl HttpFetcher for LiveHttp {
             .with_context(|| format!("response error for {url}"))?
             .bytes()
             .await?)
+    }
+
+    async fn get_bytes_streaming(
+        &self,
+        url: &str,
+        task: &mut dyn ProgressTask,
+    ) -> Result<Bytes> {
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .with_context(|| format!("GET {url}"))?
+            .error_for_status()
+            .with_context(|| format!("response error for {url}"))?;
+        if let Some(total) = resp.content_length() {
+            task.set_total(total);
+        }
+        let mut buf: Vec<u8> = Vec::new();
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.with_context(|| format!("stream chunk from {url}"))?;
+            task.advance(chunk.len() as u64);
+            buf.extend_from_slice(&chunk);
+        }
+        Ok(Bytes::from(buf))
     }
 
     async fn get_text_authenticated(&self, url: &str) -> Result<String> {

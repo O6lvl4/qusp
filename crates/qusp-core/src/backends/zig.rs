@@ -82,6 +82,7 @@ impl Backend for ZigBackend {
         version: &str,
         _opts: &InstallOpts,
         http: &dyn crate::effects::HttpFetcher,
+        progress: &dyn crate::effects::ProgressReporter,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -103,10 +104,12 @@ impl Backend for ZigBackend {
         let asset = pick_zig_asset(&body, version, triple)?
             .ok_or_else(|| anyhow!("no Zig asset for {version} on {triple}"))?;
 
+        let mut task = progress.start(&format!("downloading zig {version}"), None);
         let bytes = http
-            .get_bytes(&asset.tarball)
+            .get_bytes_streaming(&asset.tarball, task.as_mut())
             .await
             .with_context(|| format!("download {}", asset.tarball))?;
+        task.finish(format!("downloaded zig {version}"));
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let actual = hex::encode(hasher.finalize());

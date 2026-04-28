@@ -82,7 +82,10 @@ impl<'a> Orchestrator<'a> {
             futs.push(async move {
                 let http = LiveHttp::new(concat!("qusp/", env!("CARGO_PKG_VERSION")))
                     .expect("LiveHttp build cannot fail with default reqwest config");
-                let result = backend.install(&paths, &version, &opts, &http).await;
+                let progress = crate::effects::LiveProgress::new();
+                let result = backend
+                    .install(&paths, &version, &opts, &http, &progress)
+                    .await;
                 (lang, result)
             });
         }

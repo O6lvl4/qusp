@@ -54,6 +54,7 @@ impl Backend for RubyBackend {
         version: &str,
         _opts: &InstallOpts,
         _http: &dyn crate::effects::HttpFetcher,
+        _progress: &dyn crate::effects::ProgressReporter,
     ) -> Result<InstallReport> {
         let paths = rv_core::paths::discover()?;
         paths.ensure_dirs()?;

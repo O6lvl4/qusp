@@ -92,6 +92,7 @@ impl Backend for PythonBackend {
         version: &str,
         _opts: &InstallOpts,
         http: &dyn crate::effects::HttpFetcher,
+        progress: &dyn crate::effects::ProgressReporter,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -141,10 +142,12 @@ impl Backend for PythonBackend {
         let expected = parse_sums_line(&sums_text, &asset.name)
             .ok_or_else(|| anyhow!("no entry for {} in SHA256SUMS", asset.name))?;
 
+        let mut task = progress.start(&format!("downloading {}", asset.name), None);
         let bytes = http
-            .get_bytes(&asset_url)
+            .get_bytes_streaming(&asset_url, task.as_mut())
             .await
             .with_context(|| format!("download {}", asset.name))?;
+        task.finish(format!("downloaded {}", asset.name));
 
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);

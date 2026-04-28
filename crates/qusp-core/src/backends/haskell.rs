@@ -155,6 +155,7 @@ impl Backend for HaskellBackend {
         version: &str,
         _opts: &InstallOpts,
         http: &dyn crate::effects::HttpFetcher,
+        progress: &dyn crate::effects::ProgressReporter,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -188,10 +189,12 @@ impl Backend for HaskellBackend {
             anyhow!("could not find sha256 for {ghcup_asset} in SHA256SUMS — ghcup release prep may have shifted asset names")
         })?;
 
+        let mut task = progress.start(&format!("downloading haskell {version}"), None);
         let bytes = http
-            .get_bytes(&ghcup_url)
+            .get_bytes_streaming(&ghcup_url, task.as_mut())
             .await
             .with_context(|| format!("download {ghcup_url}"))?;
+        task.finish(format!("downloaded haskell {version}"));
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let actual = hex::encode(hasher.finalize());
@@ -234,13 +237,21 @@ impl Backend for HaskellBackend {
         // is sha-verified by ghcup against its metadata source.
         let store_for_blocking = store_dir.clone();
         let ghc_version_owned = version.to_string();
+        let mut ghc_task = progress.start(
+            &format!("installing GHC {version} via ghcup (~3-5min, ~150MB DL)"),
+            None,
+        );
         let res = tokio::task::spawn_blocking(move || -> Result<()> {
             run_ghcup_install_ghc(&store_for_blocking, &ghc_version_owned)
         })
         .await
         .context("spawn_blocking for ghcup dispatch join failure")?;
-        if let Err(e) = res {
-            return Err(e.context("ghcup install ghc failed"));
+        match res {
+            Ok(()) => ghc_task.finish(format!("installed GHC {version}")),
+            Err(e) => {
+                ghc_task.fail();
+                return Err(e.context("ghcup install ghc failed"));
+            }
         }
 
         let ghc_dir = store_dir.join(".ghcup").join("ghc").join(version);
@@ -341,18 +352,27 @@ impl Backend for HaskellBackend {
 /// prefix and routes installs into `$XDG_DATA_HOME/ghcup/...` instead,
 /// which would land outside qusp's content-addressed store.
 fn run_ghcup_install_ghc(store_dir: &Path, ghc_version: &str) -> Result<()> {
+    use std::io::Write;
+    use std::process::Stdio;
     let ghcup_bin = store_dir.join("bin").join("ghcup");
     if !ghcup_bin.is_file() {
         bail!("ghcup binary not at {}", ghcup_bin.display());
     }
-    let status = Command::new(&ghcup_bin)
+    // Capture ghcup's stdout/stderr so the user sees a clean spinner
+    // instead of ghcup's ANSI cursor-up spinner colliding with qusp's
+    // own. Replay captured output on failure for diagnosis.
+    let out = Command::new(&ghcup_bin)
         .env("GHCUP_INSTALL_BASE_PREFIX", store_dir)
         .env_remove("GHCUP_USE_XDG_DIRS")
         .args(["install", "ghc", ghc_version])
-        .status()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
         .with_context(|| format!("invoke {} install ghc {ghc_version}", ghcup_bin.display()))?;
-    if !status.success() {
-        bail!("ghcup install ghc {ghc_version} exited with {status}");
+    if !out.status.success() {
+        std::io::stderr().write_all(&out.stdout).ok();
+        std::io::stderr().write_all(&out.stderr).ok();
+        bail!("ghcup install ghc {ghc_version} exited with {}", out.status);
     }
     Ok(())
 }

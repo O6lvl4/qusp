@@ -133,6 +133,7 @@ impl Backend for LuaBackend {
         version: &str,
         _opts: &InstallOpts,
         http: &dyn crate::effects::HttpFetcher,
+        progress: &dyn crate::effects::ProgressReporter,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -163,10 +164,12 @@ impl Backend for LuaBackend {
         let asset = format!("lua-{version}.tar.gz");
         let asset_url = format!("https://www.lua.org/ftp/{asset}");
 
+        let mut task = progress.start(&format!("downloading lua {version}"), None);
         let bytes = http
-            .get_bytes(&asset_url)
+            .get_bytes_streaming(&asset_url, task.as_mut())
             .await
             .with_context(|| format!("download {asset_url}"))?;
+        task.finish(format!("downloaded lua {version}"));
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let actual = hex::encode(hasher.finalize());
@@ -215,15 +218,19 @@ impl Backend for LuaBackend {
         let staging = staging_root.join("prefix");
         let src_for_blocking = src_dir.clone();
         let staging_for_blocking = staging.clone();
+        let mut build_task = progress.start(&format!("building lua {version}"), None);
         let res = tokio::task::spawn_blocking(move || -> Result<()> {
             run_lua_build(&src_for_blocking, &staging_for_blocking, plat)
         })
         .await
         .context("spawn_blocking for Lua build join failure")?;
-        if let Err(e) = res {
-            // Best-effort cleanup before propagating.
-            let _ = std::fs::remove_dir_all(&staging_root);
-            return Err(e.context("Lua make build failed"));
+        match res {
+            Ok(()) => build_task.finish(format!("built lua {version}")),
+            Err(e) => {
+                build_task.fail();
+                let _ = std::fs::remove_dir_all(&staging_root);
+                return Err(e.context("Lua make build failed"));
+            }
         }
 
         if !staging.join("bin").join("lua").is_file() {
@@ -370,32 +377,45 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
 }
 
 fn run_lua_build(src_dir: &Path, prefix: &Path, plat: &str) -> Result<()> {
+    use std::io::Write;
+    use std::process::Stdio;
     anyv_core::paths::ensure_dir(prefix)?;
 
-    // `make <plat>` builds in src/. No configure step.
-    let status = Command::new("make")
+    // Capture stdout/stderr instead of inheriting; a 50-line dump of
+    // `gcc -std=gnu99 -O2 ...` per file isn't useful unless the build
+    // fails. We replay the captured streams on error so the user can
+    // diagnose. Same pattern is used by Haskell's ghcup wrapper.
+    let out = Command::new("make")
         .arg(plat)
         .current_dir(src_dir)
-        .status()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
         .with_context(|| format!("invoke `make {plat}` in {}", src_dir.display()))?;
-    if !status.success() {
-        bail!("`make {plat}` exited with {status}");
+    if !out.status.success() {
+        std::io::stderr().write_all(&out.stdout).ok();
+        std::io::stderr().write_all(&out.stderr).ok();
+        bail!("`make {plat}` exited with {}", out.status);
     }
 
     let install_top = prefix.to_string_lossy().to_string();
-    let status = Command::new("make")
+    let out = Command::new("make")
         .arg("install")
         .arg(format!("INSTALL_TOP={install_top}"))
         .current_dir(src_dir)
-        .status()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
         .with_context(|| {
             format!(
                 "invoke `make install INSTALL_TOP={install_top}` in {}",
                 src_dir.display()
             )
         })?;
-    if !status.success() {
-        bail!("`make install` exited with {status}");
+    if !out.status.success() {
+        std::io::stderr().write_all(&out.stdout).ok();
+        std::io::stderr().write_all(&out.stderr).ok();
+        bail!("`make install` exited with {}", out.status);
     }
     Ok(())
 }

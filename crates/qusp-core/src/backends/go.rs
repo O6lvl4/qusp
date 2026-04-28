@@ -56,6 +56,7 @@ impl Backend for GoBackend {
         version: &str,
         _opts: &InstallOpts,
         http: &dyn crate::effects::HttpFetcher,
+        _progress: &dyn crate::effects::ProgressReporter,
     ) -> Result<InstallReport> {
         let paths = gv_core::paths::discover()?;
         paths.ensure_dirs()?;

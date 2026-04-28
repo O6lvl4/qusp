@@ -272,8 +272,11 @@ pub async fn run_script(
     // Idempotent install — backend.install short-circuits if the
     // version is already laid out under data/<lang>/<v>.
     let http = qusp_core::effects::LiveHttp::new(concat!("qusp/", env!("CARGO_PKG_VERSION")))?;
+    let progress = qusp_core::effects::LiveProgress::new();
     let opts = qusp_core::InstallOpts::default();
-    let report = backend.install(paths, &version, &opts, &http).await?;
+    let report = backend
+        .install(paths, &version, &opts, &http, &progress)
+        .await?;
     if !report.already_present {
         anyv_core::say!(
             "{} {lang} {} installed for ephemeral run",
@@ -398,15 +401,17 @@ mod tests {
 
     /// Helper for inline-metadata tests: write `body` to a unique
     /// temp file with the given extension and run `read_inline_metadata`.
+    /// Uses pid + atomic counter so parallel test threads can't
+    /// clash on the same temp path.
     fn read_md(ext: &str, lang: &str, body: &str) -> Option<String> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let tmp = std::env::temp_dir().join(format!(
             "qusp-md-{}-{}-{}.{}",
             lang,
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
+            n,
             ext,
         ));
         std::fs::write(&tmp, body).unwrap();

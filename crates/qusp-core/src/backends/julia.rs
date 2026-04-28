@@ -95,6 +95,7 @@ impl Backend for JuliaBackend {
         version: &str,
         _opts: &InstallOpts,
         http: &dyn crate::effects::HttpFetcher,
+        progress: &dyn crate::effects::ProgressReporter,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -116,10 +117,12 @@ impl Backend for JuliaBackend {
         let file = pick_julia_file(&body, version, os, arch)?
             .ok_or_else(|| anyhow!("no Julia archive for {version} on {os}/{arch}"))?;
 
+        let mut task = progress.start(&format!("downloading julia {version}"), None);
         let bytes = http
-            .get_bytes(&file.url)
+            .get_bytes_streaming(&file.url, task.as_mut())
             .await
             .with_context(|| format!("download {}", file.url))?;
+        task.finish(format!("downloaded julia {version}"));
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let actual = hex::encode(hasher.finalize());

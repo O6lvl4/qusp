@@ -90,6 +90,7 @@ impl Backend for BunBackend {
         version: &str,
         _opts: &InstallOpts,
         http: &dyn crate::effects::HttpFetcher,
+        progress: &dyn crate::effects::ProgressReporter,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -117,10 +118,12 @@ impl Backend for BunBackend {
         let expected = crate::backends::node::parse_shasums_line(&sums_text, &asset)
             .ok_or_else(|| anyhow!("no entry for {asset} in SHASUMS256.txt"))?;
 
+        let mut task = progress.start(&format!("downloading bun {version}"), None);
         let bytes = http
-            .get_bytes(&asset_url)
+            .get_bytes_streaming(&asset_url, task.as_mut())
             .await
             .with_context(|| format!("download {asset_url}"))?;
+        task.finish(format!("downloaded bun {version}"));
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let actual = hex::encode(hasher.finalize());

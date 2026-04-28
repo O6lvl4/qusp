@@ -15,5 +15,7 @@
 //! need a fake FS to be useful.
 
 pub mod http;
+pub mod progress;
 
 pub use http::{HttpFetcher, LiveHttp};
+pub use progress::{run_with_spinner, LiveProgress, NoopProgress, ProgressReporter, ProgressTask};

@@ -31,3 +31,5 @@ bytes = "1"
 lzma-rs = "0.3"
 tar = "0.4"
 tracing.workspace = true
+indicatif.workspace = true
+futures-util = "0.3"
