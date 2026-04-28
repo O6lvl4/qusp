@@ -256,12 +256,15 @@ impl Renderable for OutdatedOutput {
         if hits == 0 {
             println!("\n{} all toolchains at latest", success_mark());
         } else {
+            let (noun, verb) = if hits == 1 {
+                ("toolchain", "has")
+            } else {
+                ("toolchains", "have")
+            };
             println!(
-                "\n{} {} toolchain{} have newer upstream versions. \
+                "\n{} {hits} {noun} {verb} newer upstream versions. \
                  Bump qusp.toml and run `qusp sync` to apply.",
                 yellow("!"),
-                hits,
-                if hits == 1 { "" } else { "s" }
             );
         }
     }

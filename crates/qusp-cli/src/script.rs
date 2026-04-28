@@ -111,7 +111,7 @@ pub fn default_version(lang: &str) -> Option<&'static str> {
         "bun" => "1.2.0",
         "java" => "21",
         "kotlin" => "2.1.20",
-        "rust" => "1.85.0",
+        "rust" => "1.95.0",
         "zig" => "0.16.0",
         "julia" => "1.10.4",
         "crystal" => "1.20.0",
@@ -125,17 +125,52 @@ pub fn default_version(lang: &str) -> Option<&'static str> {
     })
 }
 
-/// Heuristic: argv[0] is a path to a script we should route by
-/// extension. Conservative: must (1) parse to a path with an
-/// extension we recognise *and* (2) actually exist on disk. Anything
-/// less and we fall through to existing tool-name routing.
-pub fn detect_script_invocation(argv0: &str) -> Option<(PathBuf, &'static str)> {
+/// Outcome of inspecting argv[0] for `qusp x` script-routing.
+pub enum ScriptInvocation {
+    /// Existing file with a known extension; route to language runner.
+    Routed(PathBuf, &'static str),
+    /// Existing file but no language mapping for its extension —
+    /// emit a tailored error rather than falling through to tool
+    /// dispatch (which would say "no backend recognized tool '<path>'").
+    UnsupportedExtension(PathBuf),
+    /// argv[0] doesn't refer to an existing file — caller falls
+    /// through to tool dispatch as usual.
+    NotAFile,
+}
+
+/// Inspect argv[0] for `qusp x` script-routing. Three outcomes:
+/// `Routed` (run the script), `UnsupportedExtension` (file exists
+/// but extension is not in the table — emit tailored error),
+/// `NotAFile` (caller routes via tool dispatch).
+pub fn detect_script_invocation(argv0: &str) -> ScriptInvocation {
     let path = PathBuf::from(argv0);
-    let lang = extension_to_lang(&path)?;
     if !path.is_file() {
-        return None;
+        return ScriptInvocation::NotAFile;
     }
-    Some((path, lang))
+    match extension_to_lang(&path) {
+        Some(lang) => ScriptInvocation::Routed(path, lang),
+        None => ScriptInvocation::UnsupportedExtension(path),
+    }
+}
+
+/// User-facing error for `ScriptInvocation::UnsupportedExtension`.
+/// Suggests the closest reasonable workflow per extension.
+pub fn unsupported_extension_message(path: &Path) -> String {
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("(none)")
+        .to_ascii_lowercase();
+    let hint = match ext.as_str() {
+        "rs" => "rust scripts need a cargo project; try `qusp run cargo run --example <name>` or write a `cargo-script` style cell",
+        "kt" => "Kotlin .kt files need full compilation; try `qusp run kotlinc <file>.kt -include-runtime -d <out>.jar` or use .kts (Kotlin script) which qusp x supports",
+        "" | "(none)" => "no extension to route — either give a path with a known extension (.py, .lua, .scala, ...) or pass a tool name without a leading path",
+        _ => "this extension isn't in qusp's script-routing table. Pass a tool name instead, or pin the language and run via `qusp run <interpreter> <file>`",
+    };
+    format!(
+        "qusp x doesn't support .{ext} scripts ({}). \n  → {hint}",
+        path.display()
+    )
 }
 
 /// Resolve the toolchain version to use for a script run.
@@ -553,26 +588,59 @@ mod tests {
     }
 
     #[test]
-    fn detect_script_invocation_requires_existing_file_with_known_ext() {
-        // Real file path with known ext — match.
+    fn detect_script_invocation_returns_routed_for_known_extension() {
         let tmp = std::env::temp_dir().join(format!(
-            "qusp-script-detect-{}.lua",
-            std::process::id()
+            "qusp-script-detect-{}-{}.lua",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
         ));
         std::fs::write(&tmp, "print('hi')\n").unwrap();
         let argv0 = tmp.to_string_lossy().to_string();
-        let got = detect_script_invocation(&argv0);
-        assert!(got.is_some(), "real .lua should match");
-        let (_, lang) = got.unwrap();
-        assert_eq!(lang, "lua");
-
-        // Known ext, but file doesn't exist — no match (caller falls
-        // through to tool dispatch, gets a "no such tool" error).
-        assert!(detect_script_invocation("/tmp/nope-does-not-exist.lua").is_none());
-
-        // Bare command name (looks like a tool) — no match.
-        assert!(detect_script_invocation("gopls").is_none());
-
+        match detect_script_invocation(&argv0) {
+            ScriptInvocation::Routed(_, lang) => assert_eq!(lang, "lua"),
+            other => panic!("expected Routed, got {:?}", std::mem::discriminant(&other)),
+        }
         std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn detect_script_invocation_returns_unsupported_for_known_file_unknown_ext() {
+        // .rs is intentionally not in extension_to_lang (rust scripts
+        // need a cargo project). Existing file with such ext should
+        // get a tailored error, not fall through to tool dispatch.
+        let tmp = std::env::temp_dir().join(format!(
+            "qusp-script-detect-{}-{}.rs",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        ));
+        std::fs::write(&tmp, "fn main() {}\n").unwrap();
+        let argv0 = tmp.to_string_lossy().to_string();
+        match detect_script_invocation(&argv0) {
+            ScriptInvocation::UnsupportedExtension(p) => {
+                let msg = unsupported_extension_message(&p);
+                assert!(msg.contains(".rs"), "expected message to mention .rs: {msg}");
+                assert!(msg.contains("cargo"), "expected cargo hint in: {msg}");
+            }
+            _ => panic!("expected UnsupportedExtension"),
+        }
+        std::fs::remove_file(&tmp).ok();
+    }
+
+    #[test]
+    fn detect_script_invocation_returns_not_a_file_for_tool_names() {
+        match detect_script_invocation("gopls") {
+            ScriptInvocation::NotAFile => {}
+            _ => panic!("bare tool name should be NotAFile"),
+        }
+        match detect_script_invocation("/tmp/nope-does-not-exist.lua") {
+            ScriptInvocation::NotAFile => {}
+            _ => panic!("missing file should be NotAFile"),
+        }
     }
 }

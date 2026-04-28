@@ -1,4 +1,4 @@
-//! qusp CLI — v0.28.1.
+//! qusp CLI — v0.28.2.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
@@ -279,14 +279,19 @@ async fn cmd_install(
         // For manual `qusp install <lang> <version>` we honour a
         // `qusp.toml` distribution pin if there is one, so vendor stays
         // consistent across project commands.
-        let distribution = manifest::find_root(&std::env::current_dir()?)
-            .and_then(|root| manifest::load(&root).ok())
+        let cwd = std::env::current_dir()?;
+        let project_root = manifest::find_root(&cwd);
+        let distribution = project_root
+            .as_deref()
+            .and_then(|root| manifest::load(root).ok())
             .and_then(|m| m.languages.get(lang).cloned())
             .and_then(|s| s.distribution);
         // Backend's install method drives its own download/build
         // progress via LiveProgress; no outer spinner needed (would
         // race with the per-step bars).
-        let opts = qusp_core::InstallOpts { distribution };
+        let opts = qusp_core::InstallOpts {
+            distribution: distribution.clone(),
+        };
         let http = qusp_core::effects::LiveHttp::new(concat!("qusp/", env!("CARGO_PKG_VERSION")))?;
         let progress = qusp_core::effects::LiveProgress::new();
         let report = backend
@@ -296,6 +301,29 @@ async fn cmd_install(
         if !report.install_dir.as_os_str().is_empty() {
             say!("  → {}", report.install_dir.display());
         }
+
+        // P2 fix (dogfood 2026-04-29): the with-arg `qusp install <lang> <ver>`
+        // path used to leave qusp.lock untouched, so users had to call
+        // `qusp sync` separately. F4's lock-on-success in the no-args
+        // path didn't extend here. Now: if there's a qusp.toml in scope,
+        // upsert this backend's entry into qusp.lock so subsequent
+        // `qusp run` / `--frozen` workflows pick it up immediately.
+        if let Some(root) = project_root {
+            let mut lock = lock::Lock::load(&root).unwrap_or_else(|_| lock::Lock::empty());
+            let mut entry = lock.backends.get(lang).cloned().unwrap_or_default();
+            entry.version = report.version.clone();
+            if let Some(d) = distribution {
+                entry.distribution = d;
+            }
+            lock.upsert_backend(lang, entry);
+            if let Err(e) = lock.save(&root) {
+                eprintln!(
+                    "{} could not persist qusp.lock: {e:#}",
+                    color_yellow("!")
+                );
+            }
+        }
+
         return Ok(ExitCode::SUCCESS);
     }
     if lang.is_some() || version.is_some() {
@@ -613,8 +641,21 @@ async fn cmd_x(
     // single-file runner — installing the toolchain on demand. This
     // is qusp's "uv run hello.py" equivalent, generalized across
     // every backend qusp owns.
-    if let Some((script_path, lang)) = script::detect_script_invocation(cmd) {
-        return script::run_script(r, paths, &script_path, lang, rest).await;
+    //
+    // If argv[0] is an existing file but the extension is not in our
+    // table (e.g. `.rs` — rust scripts need a cargo project), emit a
+    // tailored error rather than mis-routing to tool dispatch (which
+    // would say "no backend recognized tool '/path/to/script.rs'").
+    match script::detect_script_invocation(cmd) {
+        script::ScriptInvocation::Routed(script_path, lang) => {
+            return script::run_script(r, paths, &script_path, lang, rest).await;
+        }
+        script::ScriptInvocation::UnsupportedExtension(path) => {
+            bail!("{}", script::unsupported_extension_message(&path));
+        }
+        script::ScriptInvocation::NotAFile => {
+            // Fall through to tool-name dispatch below.
+        }
     }
 
     // Fall through: argv[0] is a tool name. Route to its backend.
@@ -958,7 +999,7 @@ fn cmd_init(r: &BackendRegistry, langs: Option<Vec<String>>, force: bool) -> Res
                 "bun" => "1.2.0",
                 "java" => "21",
                 "kotlin" => "2.1.20",
-                "rust" => "1.85.0",
+                "rust" => "1.95.0",
                 "zig" => "0.16.0",
                 "julia" => "1.10.4",
                 "crystal" => "1.20.0",
@@ -994,7 +1035,7 @@ fn cmd_init(r: &BackendRegistry, langs: Option<Vec<String>>, force: bool) -> Res
                 "bun" => "1.2.0",
                 "java" => "21",
                 "kotlin" => "2.1.20",
-                "rust" => "1.85.0",
+                "rust" => "1.95.0",
                 "zig" => "0.16.0",
                 "julia" => "1.10.4",
                 "crystal" => "1.20.0",
@@ -1074,7 +1115,11 @@ async fn cmd_outdated(r: &BackendRegistry, fmt: OutputFormat) -> Result<ExitCode
         if latest.is_empty() {
             continue;
         }
-        let status = if version_loose_eq(&pinned, &latest) {
+        // Rolling channels (`stable`, `beta`, `nightly`, `latest`)
+        // resolve to the latest upstream by definition, so reporting
+        // them as outdated is a false positive (P4 from dogfood
+        // session 2026-04-29). Treat them as always up-to-date.
+        let status = if is_rolling_channel(&pinned) || version_loose_eq(&pinned, &latest) {
             output::OutdatedStatus::UpToDate
         } else {
             output::OutdatedStatus::Outdated
@@ -1099,6 +1144,16 @@ fn version_loose_eq(a: &str, b: &str) -> bool {
             .to_string()
     }
     norm(a) == norm(b)
+}
+
+/// Rolling channels resolve to "the latest upstream" by definition.
+/// Used by `outdated` to suppress false-positive "X → Y" reports
+/// when the user explicitly opted into a rolling pin.
+fn is_rolling_channel(pinned: &str) -> bool {
+    matches!(
+        pinned.trim(),
+        "stable" | "beta" | "nightly" | "latest" | "current"
+    )
 }
 
 async fn cmd_self_update(check: bool) -> Result<ExitCode> {

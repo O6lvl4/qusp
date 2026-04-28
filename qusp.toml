@@ -1,0 +1,7 @@
+# qusp.toml — multi-language toolchain manifest.
+# Pin one section per language; `qusp install` (no args) installs them all in parallel.
+# https://github.com/O6lvl4/qusp
+
+[rust]
+version = "stable"
+
