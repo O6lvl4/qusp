@@ -9,6 +9,7 @@ use anyv_core::Paths;
 use futures::future::try_join_all;
 
 use crate::backend::{Backend, InstallOpts, LockedTool, ResolvedTool, ToolSpec};
+use crate::domain::plan::{plan_install_toolchains, plan_sync, InstallPlan, SyncPlan};
 use crate::domain::PinnedManifest;
 use crate::lock::Lock;
 use crate::manifest::Manifest;
@@ -45,29 +46,37 @@ impl<'a> Orchestrator<'a> {
         Self { registry, paths }
     }
 
-    /// Install every (lang, version) declared in the manifest. Runs in
-    /// parallel across backends. Threads each section's `distribution`
-    /// into the backend's `InstallOpts`. Per-backend failures are
-    /// **collected, not propagated** — one broken backend doesn't kill
-    /// the rest. The caller decides whether the partial set is OK.
-    ///
-    /// Takes a `&PinnedManifest`, not a `&Manifest` — by the time we're
-    /// here, validation (unknown lang, missing version, cross-backend
-    /// `requires`) has already run.
+    /// High-level: plan + execute. Composes `plan_install_toolchains`
+    /// (pure) and `execute_install_plans` (effect). Most callers want
+    /// this; tests / `qusp plan` get to inspect the plan before
+    /// execution by calling the parts separately.
     pub async fn install_toolchains(
         &self,
         manifest: &PinnedManifest,
     ) -> Result<InstallToolchainsResult> {
+        let plans = plan_install_toolchains(manifest);
+        self.execute_install_plans(&plans).await
+    }
+
+    /// **Effect:** run the given install plans in parallel across
+    /// backends. Threads each plan's distribution into the backend's
+    /// `InstallOpts`. Per-backend failures are **collected, not
+    /// propagated** — one broken backend doesn't kill the rest. The
+    /// caller decides whether the partial set is OK.
+    pub async fn execute_install_plans(
+        &self,
+        plans: &[InstallPlan],
+    ) -> Result<InstallToolchainsResult> {
         let mut futs = Vec::new();
-        for (lang, sec) in manifest.iter() {
-            let Some(backend) = self.registry.get(lang) else {
+        for plan in plans {
+            let Some(backend) = self.registry.get(plan.language.as_str()) else {
                 continue;
             };
             let paths = self.paths.clone();
-            let lang = lang.to_string();
-            let version = sec.version.clone();
+            let lang = plan.language.as_str().to_string();
+            let version = plan.version.as_str().to_string();
             let opts = InstallOpts {
-                distribution: sec.distribution.clone(),
+                distribution: plan.distribution.as_ref().map(|d| d.as_str().to_string()),
             };
             futs.push(async move {
                 let result = backend.install(&paths, &version, &opts).await;
@@ -90,44 +99,97 @@ impl<'a> Orchestrator<'a> {
         Ok(InstallToolchainsResult { installed, failed })
     }
 
-    /// Install every pinned tool, in parallel. Requires that the relevant
-    /// toolchain is already installed.
-    pub async fn install_tools(
+    /// High-level sync: plan + execute. Composes `plan_sync` (pure)
+    /// and `execute_sync_plan` (effect). Toolchain install failures
+    /// are surfaced in the summary instead of aborting — a broken
+    /// Python pin shouldn't block Go tools from installing.
+    pub async fn sync(
         &self,
         manifest: &PinnedManifest,
         lock: &mut Lock,
         frozen: bool,
         client: &reqwest::Client,
-    ) -> Result<Vec<(String, LockedTool)>> {
-        // Collect (lang, name, spec) tuples first.
-        let mut planned: Vec<(String, String, ToolSpec)> = Vec::new();
-        for (lang, sec) in manifest.iter() {
-            for (name, spec) in &sec.tools {
-                planned.push((lang.to_string(), name.clone(), spec.clone()));
+    ) -> Result<SyncSummary> {
+        let plan = plan_sync(manifest, lock, frozen)?;
+        self.execute_sync_plan(&plan, lock, client).await
+    }
+
+    /// **Effect:** apply a SyncPlan against the live system + the
+    /// mutable lock. The plan itself is pure; this method is where
+    /// HTTP, filesystem writes, and lock mutations happen.
+    pub async fn execute_sync_plan(
+        &self,
+        plan: &SyncPlan,
+        lock: &mut Lock,
+        client: &reqwest::Client,
+    ) -> Result<SyncSummary> {
+        let install_result = self.execute_install_plans(&plan.install_toolchains).await?;
+        self.apply_lock_header_updates(plan, lock);
+        let tools = self.execute_tool_install_plans(plan, lock, client).await?;
+        let removed = self.apply_tool_prunes(plan, lock);
+        Ok(SyncSummary {
+            langs_installed: install_result.installed,
+            langs_failed: install_result.failed,
+            tools_installed: tools,
+            tools_removed_from_lock: removed,
+        })
+    }
+
+    /// **Effect:** write the plan's lock header updates into the lock.
+    fn apply_lock_header_updates(&self, plan: &SyncPlan, lock: &mut Lock) {
+        for upd in &plan.lock_header_updates {
+            let entry = lock
+                .backends
+                .entry(upd.language.as_str().to_string())
+                .or_default();
+            entry.version = upd.version.as_str().to_string();
+            entry.distribution = upd
+                .distribution
+                .as_ref()
+                .map(|d| d.as_str().to_string())
+                .unwrap_or_default();
+        }
+    }
+
+    /// **Effect:** drop the plan's pruned tools from the lock; return
+    /// how many were removed.
+    fn apply_tool_prunes(&self, plan: &SyncPlan, lock: &mut Lock) -> usize {
+        let mut removed = 0;
+        for prune in &plan.prune_tools {
+            if let Some(entry) = lock.backends.get_mut(prune.language.as_str()) {
+                let before = entry.tools.len();
+                entry.tools.retain(|t| t.name != prune.tool_name);
+                removed += before - entry.tools.len();
             }
         }
-        if planned.is_empty() {
+        removed
+    }
+
+    /// **Effect:** resolve + install every tool described by the plan.
+    /// Frozen entries skip resolve and reuse the lock's previous
+    /// LockedTool verbatim.
+    async fn execute_tool_install_plans(
+        &self,
+        plan: &SyncPlan,
+        lock: &mut Lock,
+        client: &reqwest::Client,
+    ) -> Result<Vec<(String, LockedTool)>> {
+        if plan.install_tools.is_empty() {
             return Ok(vec![]);
         }
 
         // Resolve in parallel.
         let mut resolve_futs = Vec::new();
-        for (lang, name, spec) in &planned {
-            let Some(backend) = self.registry.get(lang) else {
-                bail!("backend '{lang}' is not registered but appears in manifest");
+        for tool in &plan.install_tools {
+            let Some(backend) = self.registry.get(tool.language.as_str()) else {
+                bail!(
+                    "backend '{}' is not registered but appears in plan",
+                    tool.language
+                );
             };
-            let lang = lang.clone();
-            let name = name.clone();
-            if frozen {
-                let prev = lock
-                    .backends
-                    .get(&lang)
-                    .and_then(|b| b.tools.iter().find(|t| t.name == name).cloned())
-                    .ok_or_else(|| {
-                        anyhow!(
-                        "frozen sync: {lang} tool '{name}' is in qusp.toml but not in qusp.lock"
-                    )
-                    })?;
+            let lang = tool.language.as_str().to_string();
+            let name = tool.tool_name.clone();
+            if let Some(prev) = tool.frozen_carryover.clone() {
                 resolve_futs.push(Box::pin(async move {
                     Ok::<_, anyhow::Error>((
                         lang,
@@ -142,7 +204,7 @@ impl<'a> Orchestrator<'a> {
                 })
                     as std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send>>);
             } else {
-                let spec = spec.clone();
+                let spec = tool.spec.clone();
                 let client = client.clone();
                 resolve_futs.push(Box::pin(async move {
                     let r = backend.resolve_tool(&client, &name, &spec).await?;
@@ -154,14 +216,11 @@ impl<'a> Orchestrator<'a> {
 
         // Install in parallel.
         let mut install_futs = Vec::new();
-        for (lang, r) in resolved {
-            let Some(backend) = self.registry.get(&lang) else {
+        for ((lang, r), plan) in resolved.iter().zip(plan.install_tools.iter()) {
+            let Some(backend) = self.registry.get(lang) else {
                 continue;
             };
-            let toolchain_version = manifest
-                .get(&lang)
-                .map(|s| s.version.clone())
-                .ok_or_else(|| anyhow!("no [{lang}] version pinned for tool '{}'", r.name))?;
+            let toolchain_version = plan.toolchain_version.as_str().to_string();
             let paths = self.paths.clone();
             let r_clone = r.clone();
             let lang_clone = lang.clone();
@@ -174,73 +233,14 @@ impl<'a> Orchestrator<'a> {
         }
         let installed: Vec<(String, LockedTool)> = try_join_all(install_futs).await?;
 
-        // Update lock.
+        // Update lock entries with installed tools.
         for (lang, locked) in &installed {
             let entry = lock.backends.entry(lang.clone()).or_default();
-            if entry.version.is_empty() {
-                if let Some(v) = manifest.get(lang).map(|s| s.version.clone()) {
-                    entry.version = v;
-                }
-            }
             entry.tools.retain(|t| t.name != locked.name);
             entry.tools.push(locked.clone());
             entry.tools.sort_by(|a, b| a.name.cmp(&b.name));
         }
         Ok(installed)
-    }
-
-    /// Drop tools that are in the lock but no longer pinned in the
-    /// manifest. Returns the number removed.
-    pub fn prune_stale_tools(&self, manifest: &PinnedManifest, lock: &mut Lock) -> usize {
-        let mut removed = 0usize;
-        for (lang, entry) in lock.backends.iter_mut() {
-            let pinned: std::collections::HashSet<&str> = manifest
-                .get(lang)
-                .map(|s| s.tools.keys().map(|k| k.as_str()).collect())
-                .unwrap_or_default();
-            let before = entry.tools.len();
-            entry.tools.retain(|t| pinned.contains(t.name.as_str()));
-            removed += before - entry.tools.len();
-        }
-        removed
-    }
-
-    /// Refresh `LockedBackend.version` (and `distribution`, when set)
-    /// for every language in the manifest so the lock's toolchain pins
-    /// reflect the manifest after install.
-    pub fn sync_toolchain_versions(&self, manifest: &PinnedManifest, lock: &mut Lock) {
-        for (lang, sec) in manifest.iter() {
-            let entry = lock.backends.entry(lang.to_string()).or_default();
-            entry.version = sec.version.clone();
-            entry.distribution = sec.distribution.clone().unwrap_or_default();
-        }
-    }
-
-    /// End-to-end sync: install toolchains, install tools, prune stale,
-    /// reconcile lock. Toolchain install failures are surfaced in the
-    /// summary instead of aborting the whole sync — a broken Python
-    /// pin shouldn't block Go tools from installing.
-    pub async fn sync(
-        &self,
-        manifest: &PinnedManifest,
-        lock: &mut Lock,
-        frozen: bool,
-        client: &reqwest::Client,
-    ) -> Result<SyncSummary> {
-        let install_result = self.install_toolchains(manifest).await?;
-        self.sync_toolchain_versions(manifest, lock);
-        let tools = self.install_tools(manifest, lock, frozen, client).await?;
-        let removed = if !frozen {
-            self.prune_stale_tools(manifest, lock)
-        } else {
-            0
-        };
-        Ok(SyncSummary {
-            langs_installed: install_result.installed,
-            langs_failed: install_result.failed,
-            tools_installed: tools,
-            tools_removed_from_lock: removed,
-        })
     }
 
     /// Route a tool name to whichever backend's static registry knows it.
