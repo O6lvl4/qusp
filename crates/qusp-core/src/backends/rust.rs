@@ -51,9 +51,7 @@ fn rust_root(p: &AnyvPaths, version: &str) -> PathBuf {
 }
 
 fn http_client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .user_agent(concat!("qusp-rust/", env!("CARGO_PKG_VERSION")))
-        .build()?)
+    crate::http::client(concat!("qusp-rust/", env!("CARGO_PKG_VERSION")))
 }
 
 #[async_trait]

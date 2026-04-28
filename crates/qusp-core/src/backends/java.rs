@@ -61,9 +61,7 @@ fn tools_root(p: &AnyvPaths) -> PathBuf {
 }
 
 fn http_client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .user_agent(concat!("qusp-java/", env!("CARGO_PKG_VERSION")))
-        .build()?)
+    crate::http::client(concat!("qusp-java/", env!("CARGO_PKG_VERSION")))
 }
 
 fn foojay_os() -> Option<&'static str> {

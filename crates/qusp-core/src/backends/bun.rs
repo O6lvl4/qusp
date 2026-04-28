@@ -48,9 +48,7 @@ fn strip_v(v: &str) -> &str {
 }
 
 fn http_client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .user_agent(concat!("qusp-bun/", env!("CARGO_PKG_VERSION")))
-        .build()?)
+    crate::http::client(concat!("qusp-bun/", env!("CARGO_PKG_VERSION")))
 }
 
 #[derive(Deserialize, Debug)]

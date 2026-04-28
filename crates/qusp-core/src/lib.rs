@@ -7,6 +7,7 @@
 
 pub mod backend;
 pub mod backends;
+pub mod http;
 pub mod lock;
 pub mod manifest;
 pub mod orchestrator;

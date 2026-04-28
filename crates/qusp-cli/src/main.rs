@@ -1198,9 +1198,7 @@ fn cmd_completions(shell: clap_complete::Shell) -> Result<ExitCode> {
 }
 
 fn http_client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .user_agent(concat!("qusp/", env!("CARGO_PKG_VERSION")))
-        .build()?)
+    qusp_core::http::client(concat!("qusp/", env!("CARGO_PKG_VERSION")))
 }
 
 #[allow(dead_code)]

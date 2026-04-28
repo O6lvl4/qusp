@@ -53,6 +53,10 @@ jobs:
         env:
           QUSP_BIN: ${{ github.workspace }}/target/release/qusp
           E2E_VERBOSE: "1"
+          # Lifts the api.github.com rate limit from 60/hr (anonymous)
+          # to 5000/hr (authenticated). qusp's HTTP client picks this up
+          # via crate::http::client.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           if [ -n "${{ inputs.tests }}" ]; then

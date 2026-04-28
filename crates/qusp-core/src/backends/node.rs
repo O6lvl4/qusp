@@ -71,9 +71,7 @@ fn tools_root(p: &AnyvPaths) -> PathBuf {
 }
 
 fn http_client() -> Result<reqwest::Client> {
-    Ok(reqwest::Client::builder()
-        .user_agent(concat!("qusp-node/", env!("CARGO_PKG_VERSION")))
-        .build()?)
+    crate::http::client(concat!("qusp-node/", env!("CARGO_PKG_VERSION")))
 }
 
 fn strip_v(v: &str) -> &str {
