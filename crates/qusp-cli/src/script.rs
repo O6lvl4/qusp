@@ -139,13 +139,22 @@ pub fn detect_script_invocation(argv0: &str) -> Option<(PathBuf, &'static str)> 
 }
 
 /// Resolve the toolchain version to use for a script run.
-/// Precedence: qusp.toml > `.lang-version` > newest installed >
-/// `default_version` table.
+/// Precedence:
+///   1. **inline script metadata** (`# qusp: lang = X`) — added in v0.26.0
+///   2. `qusp.toml`
+///   3. `.<lang>-version`
+///   4. newest installed
+///   5. curated `default_version` table
 pub async fn resolve_script_version(
     lang: &str,
     backend: &dyn Backend,
     paths: &Paths,
+    script: &Path,
 ) -> Result<String> {
+    if let Some(v) = read_inline_metadata(script, lang) {
+        return Ok(v);
+    }
+
     let cwd = std::env::current_dir()?;
 
     if let Some(root) = manifest::find_root(&cwd) {
@@ -174,6 +183,76 @@ pub async fn resolve_script_version(
         .ok_or_else(|| anyhow!("no curated default version for {lang}; pin one in qusp.toml"))
 }
 
+/// The line-comment prefixes for each language qusp supports
+/// extension-routing for. Used by `read_inline_metadata` to scan a
+/// script's prologue. Languages that share a comment syntax share an
+/// arm; the order within a slice matters for prefix-stripping (longer
+/// before shorter to disambiguate `;;` vs `;` in Clojure).
+fn comment_prefixes(lang: &str) -> &'static [&'static str] {
+    match lang {
+        // Hash-style.
+        "python" | "ruby" | "julia" => &["#"],
+        // Double-dash.
+        "lua" | "haskell" => &["--"],
+        // C-style.
+        "node" | "deno" | "go" | "scala" | "java" | "kotlin" | "zig"
+        | "dart" | "crystal" | "groovy" => &["//"],
+        // Lisp-style. Try `;;` first (idiomatic) then bare `;` (single-line).
+        "clojure" => &[";;", ";"],
+        _ => &[],
+    }
+}
+
+/// Read inline `# qusp: <lang> = <version>` metadata from the first
+/// ~30 lines of a script. Supports per-language comment syntax
+/// (`#`, `--`, `//`, `;;`). The directive is case-sensitive on
+/// `qusp:` and the language id, but tolerant of:
+///
+/// - whitespace around `=`
+/// - quoted values: `# qusp: python = "3.11.13"` and `'3.11.13'` both work
+/// - leading whitespace on the comment itself
+///
+/// Returns `Some(version)` on first match, `None` otherwise. A
+/// language id mismatch (`# qusp: python = X` in a `.lua` script) is
+/// silently skipped — the caller is asking about `lang=lua` only.
+pub fn read_inline_metadata(script: &Path, lang: &str) -> Option<String> {
+    let content = std::fs::read_to_string(script).ok()?;
+    let prefixes = comment_prefixes(lang);
+    if prefixes.is_empty() {
+        return None;
+    }
+    for line in content.lines().take(30) {
+        let trimmed = line.trim_start();
+        for prefix in prefixes {
+            let Some(rest) = trimmed.strip_prefix(*prefix) else {
+                continue;
+            };
+            let rest = rest.trim_start();
+            let Some(rest) = rest.strip_prefix("qusp:") else {
+                continue;
+            };
+            let rest = rest.trim();
+            // Expected form: "<lang> = <version>"
+            let Some((key, value)) = rest.split_once('=') else {
+                continue;
+            };
+            if key.trim() != lang {
+                continue;
+            }
+            let value = value
+                .trim()
+                .trim_matches('"')
+                .trim_matches('\'')
+                .trim()
+                .to_string();
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
 /// Run a script under qusp's ephemeral run path. Installs the
 /// toolchain if not already present, then `exec`s the canonical
 /// script runner.
@@ -188,7 +267,7 @@ pub async fn run_script(
         .get(lang)
         .ok_or_else(|| anyhow!("internal: no backend registered for lang={lang}"))?;
 
-    let version = resolve_script_version(lang, backend.as_ref(), paths).await?;
+    let version = resolve_script_version(lang, backend.as_ref(), paths, script).await?;
 
     // Idempotent install — backend.install short-circuits if the
     // version is already laid out under data/<lang>/<v>.
@@ -315,6 +394,157 @@ mod tests {
                 "missing default_version for {lang}"
             );
         }
+    }
+
+    /// Helper for inline-metadata tests: write `body` to a unique
+    /// temp file with the given extension and run `read_inline_metadata`.
+    fn read_md(ext: &str, lang: &str, body: &str) -> Option<String> {
+        let tmp = std::env::temp_dir().join(format!(
+            "qusp-md-{}-{}-{}.{}",
+            lang,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            ext,
+        ));
+        std::fs::write(&tmp, body).unwrap();
+        let result = read_inline_metadata(&tmp, lang);
+        std::fs::remove_file(&tmp).ok();
+        result
+    }
+
+    #[test]
+    fn inline_metadata_hash_comment_python() {
+        assert_eq!(
+            read_md("py", "python", "# qusp: python = \"3.11.13\"\nprint('hi')\n"),
+            Some("3.11.13".to_string())
+        );
+    }
+
+    #[test]
+    fn inline_metadata_hash_comment_ruby_unquoted() {
+        assert_eq!(
+            read_md("rb", "ruby", "# qusp: ruby = 3.4.7\nputs 'hi'\n"),
+            Some("3.4.7".to_string())
+        );
+    }
+
+    #[test]
+    fn inline_metadata_double_dash_lua() {
+        assert_eq!(
+            read_md("lua", "lua", "-- qusp: lua = 5.4.5\nprint('hi')\n"),
+            Some("5.4.5".to_string())
+        );
+    }
+
+    #[test]
+    fn inline_metadata_double_dash_haskell() {
+        assert_eq!(
+            read_md(
+                "hs",
+                "haskell",
+                "-- qusp: haskell = 9.10.1\nmain = putStrLn \"hi\"\n"
+            ),
+            Some("9.10.1".to_string())
+        );
+    }
+
+    #[test]
+    fn inline_metadata_c_style_scala() {
+        assert_eq!(
+            read_md(
+                "scala",
+                "scala",
+                "// qusp: scala = 3.8.3\n@main def hi = println(\"hi\")\n"
+            ),
+            Some("3.8.3".to_string())
+        );
+    }
+
+    #[test]
+    fn inline_metadata_c_style_kotlin_kts() {
+        assert_eq!(
+            read_md("kts", "kotlin", "// qusp: kotlin = 2.1.20\nprintln(\"hi\")\n"),
+            Some("2.1.20".to_string())
+        );
+    }
+
+    #[test]
+    fn inline_metadata_lisp_style_clojure_double_semi() {
+        assert_eq!(
+            read_md(
+                "clj",
+                "clojure",
+                ";; qusp: clojure = 1.12.4.1618\n(println \"hi\")\n"
+            ),
+            Some("1.12.4.1618".to_string())
+        );
+    }
+
+    #[test]
+    fn inline_metadata_lisp_style_clojure_single_semi() {
+        // Less idiomatic but still valid Clojure comment.
+        assert_eq!(
+            read_md(
+                "clj",
+                "clojure",
+                "; qusp: clojure = 1.11.4.1474\n(println \"hi\")\n"
+            ),
+            Some("1.11.4.1474".to_string())
+        );
+    }
+
+    #[test]
+    fn inline_metadata_skips_lang_mismatch() {
+        // python script declaring lua version (typo / paste error).
+        // Caller asked for python, must NOT confuse and pick lua's version.
+        assert_eq!(
+            read_md("py", "python", "# qusp: lua = 5.4.5\nprint('hi')\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn inline_metadata_returns_none_on_no_match() {
+        assert_eq!(read_md("py", "python", "print('plain script')\n"), None);
+        assert_eq!(read_md("py", "python", ""), None);
+    }
+
+    #[test]
+    fn inline_metadata_only_scans_prologue() {
+        // The directive on line 50 must be ignored — qusp doesn't parse
+        // the entire file (avoids false positives from string literals
+        // / data files).
+        let mut body = String::new();
+        for _ in 0..40 {
+            body.push_str("print('filler')\n");
+        }
+        body.push_str("# qusp: python = 3.10.0\n");
+        assert_eq!(read_md("py", "python", &body), None);
+    }
+
+    #[test]
+    fn inline_metadata_tolerates_leading_whitespace() {
+        assert_eq!(
+            read_md("py", "python", "    # qusp: python = 3.13.0\n"),
+            Some("3.13.0".to_string())
+        );
+    }
+
+    #[test]
+    fn inline_metadata_handles_single_quotes() {
+        assert_eq!(
+            read_md("py", "python", "# qusp: python = '3.13.0'\n"),
+            Some("3.13.0".to_string())
+        );
+    }
+
+    #[test]
+    fn inline_metadata_unsupported_lang_returns_none() {
+        // No comment prefix table entry → no match path.
+        assert_eq!(read_md("rs", "rust", "// qusp: rust = 1.85.0\n"), None);
     }
 
     #[test]
