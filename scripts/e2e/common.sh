@@ -67,15 +67,22 @@ isolate_qusp() {
 }
 
 cleanup_qusp() {
+    # Stash and restore exit code so cleanup never masks the script's
+    # actual result (and never makes a passing test look like a failure).
+    local rc=$?
     if [ "${E2E_KEEP:-0}" = "1" ]; then
         info "E2E_KEEP=1 — leaving ${_E2E_TMPDIRS[*]}"
-        return 0
+        return "$rc"
     fi
     for d in "${_E2E_TMPDIRS[@]:-}"; do
         if [ -n "${d:-}" ] && [ -d "$d" ]; then
-            rm -rf "$d"
+            # Go's module cache chmods deps read-only so users can't
+            # accidentally edit them. Restore write bits before rm.
+            chmod -R u+w "$d" 2>/dev/null || true
+            rm -rf "$d" 2>/dev/null || true
         fi
     done
+    return "$rc"
 }
 trap cleanup_qusp EXIT
 
