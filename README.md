@@ -131,6 +131,30 @@ strict hash verification), broader than uv (every language, not just
 Python), and friendlier than Nix (no derivation language). It is **not**
 trying to replace Nix for OS-library reproducibility.
 
+### Latency
+
+`scripts/bench.sh` measures invocation cost via [hyperfine] on
+macOS-13 x86_64. Both qusp and mise have go 1.26.2 installed locally;
+the project pins it through each manager's manifest.
+
+[hyperfine]: https://github.com/sharkdp/hyperfine
+
+| Mode | Mean | User+Sys CPU |
+|---|---|---|
+| `qusp run go version` | **12.0 ms** | 9 ms |
+| `mise exec go version` | 12.1 ms | 9 ms |
+| `mise shim go version` (default activated mode) | 49.4 ms | 39 ms |
+
+**qusp run** is statistically tied with `mise exec`. mise's **shim
+mode** — the default users hit when `mise activate` is in their
+rcfile — is **~4× slower** because every command goes through a
+binary wrapper that re-resolves the toolchain.
+
+qusp doesn't have a shim layer. `qusp run` resolves and execs the
+toolchain binary directly; `eval "$(qusp shellenv)"` puts the
+toolchain bin/ on PATH so bare `go version` from the prompt is
+literally just exec'ing the qusp-managed binary.
+
 ## Architecture
 
 - `qusp-core` — `Backend` trait, manifest, lock, orchestrator
