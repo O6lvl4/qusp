@@ -3,6 +3,7 @@
 //! competing version managers.
 
 pub mod bun;
+pub mod clojure;
 pub mod crystal;
 pub mod dart;
 pub mod deno;
