@@ -25,6 +25,12 @@ pub struct Manifest {
 pub struct LanguageSection {
     #[serde(default)]
     pub version: Option<String>,
+    /// Vendor / distribution selector. Used by backends like Java where
+    /// the same version number resolves differently per vendor (Temurin
+    /// vs Corretto vs GraalVM). Single-source backends (Go, Node, …)
+    /// ignore this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distribution: Option<String>,
     #[serde(default)]
     pub tools: BTreeMap<String, ToolSpec>,
 }

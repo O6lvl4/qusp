@@ -1,4 +1,4 @@
-//! qusp CLI — v0.4.0.
+//! qusp CLI — v0.5.0.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
@@ -203,6 +203,7 @@ fn build_registry() -> BackendRegistry {
     r.register(Arc::new(backends::python::PythonBackend));
     r.register(Arc::new(backends::node::NodeBackend));
     r.register(Arc::new(backends::deno::DenoBackend));
+    r.register(Arc::new(backends::java::JavaBackend));
     r
 }
 
@@ -224,8 +225,16 @@ async fn cmd_install(
         let backend = r
             .get(lang)
             .ok_or_else(|| anyhow!("unknown language: {lang}"))?;
+        // For manual `qusp install <lang> <version>` we honour a
+        // `qusp.toml` distribution pin if there is one, so vendor stays
+        // consistent across project commands.
+        let distribution = manifest::find_root(&std::env::current_dir()?)
+            .and_then(|root| manifest::load(&root).ok())
+            .and_then(|m| m.languages.get(lang).cloned())
+            .and_then(|s| s.distribution);
         let pb = spinner(format!("installing {lang} {version}"));
-        let report = backend.install(paths, version).await?;
+        let opts = qusp_core::InstallOpts { distribution };
+        let report = backend.install(paths, version, &opts).await?;
         pb.finish_and_clear();
         say!("{} {lang} {} installed", success_mark(), report.version);
         if !report.install_dir.as_os_str().is_empty() {

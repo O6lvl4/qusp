@@ -92,7 +92,12 @@ impl Backend for DenoBackend {
         Ok(None)
     }
 
-    async fn install(&self, _: &AnyvPaths, version: &str) -> Result<InstallReport> {
+    async fn install(
+        &self,
+        _: &AnyvPaths,
+        version: &str,
+        _opts: &InstallOpts,
+    ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
         let install_dir = deno_root(&paths, version);

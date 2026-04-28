@@ -22,6 +22,10 @@ pub struct Lock {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LockedBackend {
     pub version: String,
+    /// Vendor / distribution selector echoed from the manifest.
+    /// Empty/absent when the backend is single-source.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub distribution: String,
     /// Backend-specific verification hash for the toolchain itself.
     /// Empty when not applicable (e.g. ruby compiles from source).
     #[serde(default)]

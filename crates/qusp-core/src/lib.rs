@@ -15,6 +15,7 @@ pub mod registry;
 
 pub use anyv_core::Paths;
 pub use backend::{
-    Backend, DetectedVersion, InstallReport, LockedTool, ResolvedTool, RunEnv, ToolSpec,
+    Backend, DetectedVersion, InstallOpts, InstallReport, LockedTool, ResolvedTool, RunEnv,
+    ToolSpec,
 };
 pub use registry::BackendRegistry;

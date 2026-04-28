@@ -37,7 +37,12 @@ impl Backend for RubyBackend {
         }
     }
 
-    async fn install(&self, _qusp_paths: &AnyvPaths, version: &str) -> Result<InstallReport> {
+    async fn install(
+        &self,
+        _qusp_paths: &AnyvPaths,
+        version: &str,
+        _opts: &InstallOpts,
+    ) -> Result<InstallReport> {
         let paths = rv_core::paths::discover()?;
         paths.ensure_dirs()?;
         let report = tokio::task::spawn_blocking({

@@ -143,7 +143,12 @@ impl Backend for NodeBackend {
         Ok(None)
     }
 
-    async fn install(&self, _qusp_paths: &AnyvPaths, version: &str) -> Result<InstallReport> {
+    async fn install(
+        &self,
+        _qusp_paths: &AnyvPaths,
+        version: &str,
+        _opts: &InstallOpts,
+    ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
         let install_dir = node_root(&paths, version);

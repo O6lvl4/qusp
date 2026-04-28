@@ -29,6 +29,15 @@ pub struct InstallReport {
     pub already_present: bool,
 }
 
+/// Optional vendor-/distribution-specific knobs threaded from the
+/// manifest into `Backend::install`. Single-source backends ignore.
+#[derive(Debug, Clone, Default)]
+pub struct InstallOpts {
+    /// Vendor selector (e.g. `"temurin"`, `"corretto"`, `"graalvm_community"`
+    /// for Java). Backends that don't model multiple vendors ignore.
+    pub distribution: Option<String>,
+}
+
 /// User-facing tool spec from `qusp.toml`. Either `"latest"`, an exact
 /// version, or a constraint (`^v0.18`, `~1.64`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,8 +128,15 @@ pub trait Backend: Send + Sync {
     /// pins one (caller falls through to global / latest installed).
     async fn detect_version(&self, cwd: &Path) -> Result<Option<DetectedVersion>>;
 
-    /// Install a toolchain version. Idempotent.
-    async fn install(&self, paths: &Paths, version: &str) -> Result<InstallReport>;
+    /// Install a toolchain version. Idempotent. `opts` carries
+    /// vendor-specific knobs (distribution, etc.); backends that don't
+    /// need them ignore via `let _ = opts;`.
+    async fn install(
+        &self,
+        paths: &Paths,
+        version: &str,
+        opts: &InstallOpts,
+    ) -> Result<InstallReport>;
 
     /// Drop a toolchain version (does not touch tool installs that
     /// depended on it; see cache prune).

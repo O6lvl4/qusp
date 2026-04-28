@@ -37,7 +37,12 @@ impl Backend for GoBackend {
         }
     }
 
-    async fn install(&self, _qusp_paths: &AnyvPaths, version: &str) -> Result<InstallReport> {
+    async fn install(
+        &self,
+        _qusp_paths: &AnyvPaths,
+        version: &str,
+        _opts: &InstallOpts,
+    ) -> Result<InstallReport> {
         let paths = gv_core::paths::discover()?;
         paths.ensure_dirs()?;
         let client = reqwest::Client::builder()

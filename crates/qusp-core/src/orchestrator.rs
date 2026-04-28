@@ -8,7 +8,7 @@ use anyhow::{anyhow, bail, Result};
 use anyv_core::Paths;
 use futures::future::try_join_all;
 
-use crate::backend::{Backend, LockedTool, ResolvedTool, ToolSpec};
+use crate::backend::{Backend, InstallOpts, LockedTool, ResolvedTool, ToolSpec};
 use crate::lock::{Lock, LockedBackend};
 use crate::manifest::Manifest;
 use crate::registry::BackendRegistry;
@@ -38,7 +38,8 @@ impl<'a> Orchestrator<'a> {
     }
 
     /// Install every (lang, version) declared in the manifest. Runs in
-    /// parallel across backends.
+    /// parallel across backends. Threads each section's `distribution`
+    /// into the backend's `InstallOpts`.
     pub async fn install_toolchains(&self, manifest: &Manifest) -> Result<Vec<InstallSummary>> {
         let mut futs = Vec::new();
         for (lang, sec) in &manifest.languages {
@@ -46,8 +47,11 @@ impl<'a> Orchestrator<'a> {
             let Some(backend) = self.registry.get(lang) else { continue; };
             let paths = self.paths.clone();
             let lang = lang.clone();
+            let opts = InstallOpts {
+                distribution: sec.distribution.clone(),
+            };
             futs.push(async move {
-                let report = backend.install(&paths, &version).await?;
+                let report = backend.install(&paths, &version, &opts).await?;
                 Ok::<_, anyhow::Error>(InstallSummary {
                     lang,
                     version: report.version,
@@ -166,8 +170,9 @@ impl<'a> Orchestrator<'a> {
         removed
     }
 
-    /// Refresh `LockedBackend.version` for every language in the manifest
-    /// so the lock's toolchain pins reflect the manifest after install.
+    /// Refresh `LockedBackend.version` (and `distribution`, when set)
+    /// for every language in the manifest so the lock's toolchain pins
+    /// reflect the manifest after install.
     pub fn sync_toolchain_versions(&self, manifest: &Manifest, lock: &mut Lock) {
         for (lang, sec) in &manifest.languages {
             let Some(v) = sec.version.clone() else { continue; };
@@ -176,6 +181,7 @@ impl<'a> Orchestrator<'a> {
                 .entry(lang.clone())
                 .or_insert_with(LockedBackend::default);
             entry.version = v;
+            entry.distribution = sec.distribution.clone().unwrap_or_default();
         }
     }
 
@@ -233,12 +239,19 @@ impl<'a> Orchestrator<'a> {
         let spec = ToolSpec::Short(version.to_string());
         let resolved = backend.resolve_tool(client, name, &spec).await?;
         let locked = backend.install_tool(self.paths, &toolchain_version, &resolved).await?;
+        let distribution = manifest
+            .languages
+            .get(&lang)
+            .and_then(|s| s.distribution.clone());
         // Update manifest.
         let sec = manifest.languages.entry(lang.clone()).or_default();
         sec.tools.insert(name.to_string(), spec);
         // Update lock.
         let entry = lock.backends.entry(lang.clone()).or_default();
         if entry.version.is_empty() { entry.version = toolchain_version.clone(); }
+        if entry.distribution.is_empty() {
+            entry.distribution = distribution.unwrap_or_default();
+        }
         entry.tools.retain(|t| t.name != locked.name);
         entry.tools.push(locked.clone());
         entry.tools.sort_by(|a, b| a.name.cmp(&b.name));
