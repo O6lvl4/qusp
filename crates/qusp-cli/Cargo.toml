@@ -1,0 +1,24 @@
+[package]
+name = "qusp-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "qusp: every language toolchain in superposition."
+
+[[bin]]
+name = "qusp"
+path = "src/main.rs"
+
+[dependencies]
+qusp-core = { path = "../qusp-core" }
+anyv-core.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+indicatif.workspace = true
+futures.workspace = true

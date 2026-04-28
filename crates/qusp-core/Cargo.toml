@@ -1,0 +1,22 @@
+[package]
+name = "qusp-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core library for qusp: backend trait, manifest, lock, resolution chain."
+
+[dependencies]
+anyv-core.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+async-trait.workspace = true
+futures.workspace = true
+tracing.workspace = true

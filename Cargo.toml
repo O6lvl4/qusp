@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = ["crates/qusp-core", "crates/qusp-cli"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.85"
+authors = ["O6lvl4"]
+license = "MIT"
+repository = "https://github.com/O6lvl4/qusp"
+homepage = "https://github.com/O6lvl4/qusp"
+description = "Every language toolchain in superposition. `cd` collapses to one."
+
+[workspace.dependencies]
+anyv-core = { git = "https://github.com/O6lvl4/anyv-core", tag = "v0.1.0" }
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json"] }
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+indicatif = "0.17"
+futures = "0.3"
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+opt-level = 3
+panic = "abort"
