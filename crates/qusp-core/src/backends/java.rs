@@ -177,6 +177,11 @@ impl Backend for JavaBackend {
             });
         }
 
+        // W1 fix: serialize concurrent installs of the same lang+version+distribution.
+        let _install_guard = crate::effects::StoreLock::acquire(
+            &crate::effects::lock_path_for(&install_dir),
+        )?;
+
         let os = foojay_os().ok_or_else(|| anyhow!("Foojay has no JDK packaging for this OS"))?;
         let arch = foojay_arch()
             .ok_or_else(|| anyhow!("Foojay has no JDK packaging for this architecture"))?;
@@ -280,26 +285,10 @@ impl Backend for JavaBackend {
         if let Some(parent) = install_dir.parent() {
             anyv_core::paths::ensure_dir(parent)?;
         }
-        if install_dir.exists() || install_dir.is_symlink() {
-            let _ = std::fs::remove_file(&install_dir);
-            let _ = std::fs::remove_dir_all(&install_dir);
-        }
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&java_home, &install_dir).with_context(|| {
-            format!(
-                "symlink {} → {}",
-                install_dir.display(),
-                java_home.display()
-            )
-        })?;
-        #[cfg(windows)]
-        std::os::windows::fs::symlink_dir(&java_home, &install_dir).with_context(|| {
-            format!(
-                "symlink {} → {}",
-                install_dir.display(),
-                java_home.display()
-            )
-        })?;
+        crate::effects::atomic_symlink_swap(&java_home, &install_dir)
+            .with_context(|| {
+                format!("symlink {} → {}", install_dir.display(), java_home.display())
+            })?;
 
         Ok(InstallReport {
             version: pkg.java_version.clone(),

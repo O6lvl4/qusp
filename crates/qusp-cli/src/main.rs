@@ -1,4 +1,4 @@
-//! qusp CLI — v0.27.0.
+//! qusp CLI — v0.28.0.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
@@ -315,6 +315,36 @@ async fn cmd_install(
     let started = std::time::Instant::now();
     let result = orch.install_toolchains(&pinned).await?;
     let elapsed = started.elapsed().as_millis();
+
+    // F4 fix: persist successful installs to qusp.lock even if some
+    // backends fail. Previously `qusp install` (no-args) wrote nothing
+    // to the lock — partial-success installs left the user with no
+    // way to `sync --frozen` against what actually shipped.
+    if !result.installed.is_empty() {
+        let mut lock = lock::Lock::load(&root).unwrap_or_else(|_| lock::Lock::empty());
+        for s in &result.installed {
+            // Preserve any existing tools entry; just refresh version+distribution.
+            let mut entry = lock
+                .backends
+                .get(&s.lang)
+                .cloned()
+                .unwrap_or_default();
+            entry.version = s.version.clone();
+            // Distribution comes from the manifest if present.
+            if let Some(sec) = m.languages.get(&s.lang) {
+                if let Some(d) = &sec.distribution {
+                    entry.distribution = d.clone();
+                }
+            }
+            lock.upsert_backend(&s.lang, entry);
+        }
+        if let Err(e) = lock.save(&root) {
+            eprintln!(
+                "{} could not persist qusp.lock: {e:#}",
+                color_yellow("!")
+            );
+        }
+    }
     say!(
         "{} Installed {} toolchain{} in {}",
         success_mark(),

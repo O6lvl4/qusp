@@ -155,6 +155,12 @@ impl Backend for NodeBackend {
                 already_present: true,
             });
         }
+
+        // W1 fix: serialize concurrent installs of the same lang+version.
+        // Held until install completes; different versions / langs unaffected.
+        let _install_guard = crate::effects::StoreLock::acquire(
+            &crate::effects::lock_path_for(&install_dir),
+        )?;
         let triple =
             target_triple().ok_or_else(|| anyhow!("nodejs.org has no asset for this platform"))?;
         let v = with_v(version);
@@ -204,26 +210,10 @@ impl Backend for NodeBackend {
         if let Some(parent) = install_dir.parent() {
             anyv_core::paths::ensure_dir(parent)?;
         }
-        if install_dir.exists() || install_dir.is_symlink() {
-            let _ = std::fs::remove_file(&install_dir);
-            let _ = std::fs::remove_dir_all(&install_dir);
-        }
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&real_install, &install_dir).with_context(|| {
-            format!(
-                "symlink {} → {}",
-                install_dir.display(),
-                real_install.display()
-            )
-        })?;
-        #[cfg(windows)]
-        std::os::windows::fs::symlink_dir(&real_install, &install_dir).with_context(|| {
-            format!(
-                "symlink {} → {}",
-                install_dir.display(),
-                real_install.display()
-            )
-        })?;
+        crate::effects::atomic_symlink_swap(&real_install, &install_dir)
+            .with_context(|| {
+                format!("symlink {} → {}", install_dir.display(), real_install.display())
+            })?;
         let _ = std::fs::remove_file(&cache_path);
         Ok(InstallReport {
             version: strip_v(version).to_string(),

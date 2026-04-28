@@ -33,3 +33,8 @@ tar = "0.4"
 tracing.workspace = true
 indicatif.workspace = true
 futures-util = "0.3"
+# Advisory file locks (Phase 5 outstanding correctness bug W1: prevent
+# concurrent `qusp install <same-lang> <same-version>` from racing on
+# the content-addressed store). Cross-platform via fcntl flock /
+# Win32 LockFileEx.
+fs2 = "0.4"

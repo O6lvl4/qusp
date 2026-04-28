@@ -107,6 +107,12 @@ impl Backend for JuliaBackend {
                 already_present: true,
             });
         }
+
+        // W1 fix: serialize concurrent installs of the same lang+version.
+        // Held until install completes; different versions / langs unaffected.
+        let _install_guard = crate::effects::StoreLock::acquire(
+            &crate::effects::lock_path_for(&install_dir),
+        )?;
         let (os, arch) =
             host_os_arch().ok_or_else(|| anyhow!("julialang-s3 has no asset for this platform"))?;
 
@@ -153,16 +159,10 @@ impl Backend for JuliaBackend {
         if let Some(parent) = install_dir.parent() {
             anyv_core::paths::ensure_dir(parent)?;
         }
-        if install_dir.exists() || install_dir.is_symlink() {
-            let _ = std::fs::remove_file(&install_dir);
-            let _ = std::fs::remove_dir_all(&install_dir);
-        }
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&inner, &install_dir)
-            .with_context(|| format!("symlink {} → {}", install_dir.display(), inner.display()))?;
-        #[cfg(windows)]
-        std::os::windows::fs::symlink_dir(&inner, &install_dir)
-            .with_context(|| format!("symlink {} → {}", install_dir.display(), inner.display()))?;
+        crate::effects::atomic_symlink_swap(&inner, &install_dir)
+            .with_context(|| {
+                format!("symlink {} → {}", install_dir.display(), inner.display())
+            })?;
 
         Ok(InstallReport {
             version: version.to_string(),

@@ -113,6 +113,12 @@ impl Backend for DartBackend {
                 already_present: true,
             });
         }
+
+        // W1 fix: serialize concurrent installs of the same lang+version.
+        // Held until install completes; different versions / langs unaffected.
+        let _install_guard = crate::effects::StoreLock::acquire(
+            &crate::effects::lock_path_for(&install_dir),
+        )?;
         let triple = host_triple().ok_or_else(|| {
             anyhow!(
                 "Dart SDK is not published for {}-{} by upstream",
@@ -182,18 +188,10 @@ impl Backend for DartBackend {
         if let Some(parent) = install_dir.parent() {
             anyv_core::paths::ensure_dir(parent)?;
         }
-        if install_dir.exists() || install_dir.is_symlink() {
-            let _ = std::fs::remove_file(&install_dir);
-            let _ = std::fs::remove_dir_all(&install_dir);
-        }
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&dart_top, &install_dir).with_context(|| {
-            format!("symlink {} → {}", install_dir.display(), dart_top.display())
-        })?;
-        #[cfg(windows)]
-        std::os::windows::fs::symlink_dir(&dart_top, &install_dir).with_context(|| {
-            format!("symlink {} → {}", install_dir.display(), dart_top.display())
-        })?;
+        crate::effects::atomic_symlink_swap(&dart_top, &install_dir)
+            .with_context(|| {
+                format!("symlink {} → {}", install_dir.display(), dart_top.display())
+            })?;
 
         Ok(InstallReport {
             version: version.to_string(),
