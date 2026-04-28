@@ -9,6 +9,7 @@ pub mod dart;
 pub mod deno;
 pub mod go;
 pub mod groovy;
+pub mod haskell;
 pub mod java;
 pub mod julia;
 pub mod kotlin;

@@ -52,7 +52,6 @@
 
 | 項目 | bootstrap | コメント |
 |---|---|---|
-| [Haskell](on-hold/haskell.md) | ghcup | GHC build 5-10 分 |
 | [OCaml](on-hold/ocaml.md) | opam | base compiler build 5-15 分 |
 
 ## On Hold — Phase 5: Reproducibility & Nix Bridge (3.x)
@@ -92,6 +91,7 @@
 | [Scala 3 backend](done/scala.md) | v0.20.0 | Phase 4 |
 | [Clojure backend](done/clojure.md) | v0.21.0 | Phase 4 |
 | [Lua backend](done/lua.md) | v0.22.0 | Phase 4 |
+| [Haskell backend (ghcup wrap)](done/haskell.md) | v0.23.0 | Phase 4 |
 | [e2e test scenarios](done/e2e-tests.md) | scripts/e2e/* | Phase 1 |
 | [Benchmark vs mise](done/benchmark-vs-mise.md) — shim mode 4× 速い実数 | scripts/bench.sh | Phase 1 |
 

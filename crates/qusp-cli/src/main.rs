@@ -1,4 +1,4 @@
-//! qusp CLI — v0.22.0.
+//! qusp CLI — v0.23.0.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
@@ -238,6 +238,7 @@ fn build_registry() -> BackendRegistry {
     r.register(Arc::new(backends::scala::ScalaBackend));
     r.register(Arc::new(backends::clojure::ClojureBackend));
     r.register(Arc::new(backends::lua::LuaBackend));
+    r.register(Arc::new(backends::haskell::HaskellBackend));
     r
 }
 
@@ -907,6 +908,7 @@ fn cmd_init(r: &BackendRegistry, langs: Option<Vec<String>>, force: bool) -> Res
                 "scala" => "3.8.3",
                 "clojure" => "1.12.4.1618",
                 "lua" => "5.4.7",
+                "haskell" => "9.10.1",
                 _ => "<version>",
             };
             out.push_str(&format!("# [{id}]\n"));
@@ -942,6 +944,7 @@ fn cmd_init(r: &BackendRegistry, langs: Option<Vec<String>>, force: bool) -> Res
                 "scala" => "3.8.3",
                 "clojure" => "1.12.4.1618",
                 "lua" => "5.4.7",
+                "haskell" => "9.10.1",
                 _ => "<version>",
             };
             out.push_str(&format!("[{id}]\n"));
