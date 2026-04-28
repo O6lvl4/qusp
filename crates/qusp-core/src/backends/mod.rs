@@ -3,6 +3,7 @@
 //! competing version managers.
 
 pub mod bun;
+pub mod crystal;
 pub mod deno;
 pub mod go;
 pub mod java;

@@ -1,7 +1,8 @@
 # Crystal
 
-**優先度:** Phase 4 (2.x+)
-**難易度:** 低 (シンプル、bun/deno 同形)
+**Shipped:** v0.17.0
+**Tag:** v0.17.0
+**Phase 4 第三弾。GitHub `asset.digest` 経由 sha256 verify を初導入。**
 
 ## なぜ
 

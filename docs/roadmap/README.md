@@ -36,7 +36,6 @@
 
 | 項目 | 入手経路 | コメント |
 |---|---|---|
-| [Crystal](on-hold/crystal.md) | crystal-lang/crystal releases | macOS Universal binary |
 | [Dart / Flutter](on-hold/dart-and-flutter.md) | storage.googleapis.com | Flutter SDK ~700MB |
 | [Groovy](on-hold/groovy.md) | archive.apache.org zip | `requires = ["java"]` |
 
@@ -90,6 +89,7 @@
 | [Audit-driven full migration completion](done/full-migration-completion.md) | v0.14.0 | Phase 1 |
 | [Zig backend (Phase 4 第一弾)](done/zig.md) | v0.15.0 | Phase 4 |
 | [Julia backend](done/julia.md) | v0.16.0 | Phase 4 |
+| [Crystal backend](done/crystal.md) | v0.17.0 | Phase 4 |
 | [e2e test scenarios](done/e2e-tests.md) | scripts/e2e/* | Phase 1 |
 | [Benchmark vs mise](done/benchmark-vs-mise.md) — shim mode 4× 速い実数 | scripts/bench.sh | Phase 1 |
 
