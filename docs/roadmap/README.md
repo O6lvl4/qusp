@@ -1,6 +1,6 @@
 # Qusp Roadmap
 
-> [GRAND_PLAN.md](GRAND_PLAN.md) — 5 フェーズの全体戦略
+> [GRAND_PLAN.md](GRAND_PLAN.md) — 6 フェーズの全体戦略 (Phase 5 = Hospitality Parity を v0.24.0 起点で新設)
 
 ## Active
 
@@ -15,54 +15,73 @@
 | [Sigstore signature verification](on-hold/sigstore-verification.md) | sha verification を超えた SLSA / sigstore | Phase 2 |
 | [Range version specs](on-hold/range-version-specs.md) | `^21.0`, `~1.85.0` | Phase 2 |
 | [`qusp upgrade`](on-hold/qusp-upgrade.md) | outdated → manifest bump → sync | Phase 2 |
-| [Linux benchmark](on-hold/linux-benchmark.md) | 今は macOS のみ。CI nightly で permanenent | Phase 2 |
-| [Backend unit tests](on-hold/backend-unit-tests.md) | python/rust 以外の 7 backends | Phase 2 |
+| [Linux benchmark](on-hold/linux-benchmark.md) | 今は macOS のみ。CI nightly で永続化 | Phase 2 |
+| [Backend unit tests](on-hold/backend-unit-tests.md) | python/rust 以外の backends | Phase 2 |
 | [`qusp plan`](on-hold/qusp-plan.md) | terraform-plan 相当の dry-run。dogfood で需要が出れば | Phase 2 |
 
 ## On Hold — Phase 3: Tool Economy (2.x)
 
+> **Phase 5 (Hospitality) の cross-language tool registry に内包される予定。**
+
 | 項目 | 説明 | Grand Plan |
 |---|---|---|
 | [Python tools via uv routing](on-hold/python-tools-via-uv.md) | `qusp add tool ruff` → uv tool install | Phase 3 |
-| [Tool registry expansion](on-hold/tool-registry-expansion.md) | Node / Java curated set を倍 | Phase 3 |
+| [Tool registry expansion](on-hold/tool-registry-expansion.md) | Node / Java / Go の curated set 拡大 | Phase 3 |
 | [Cargo binstall integration](on-hold/cargo-binstall.md) | Rust ecosystem の prebuilt パス | Phase 3 |
 
-## On Hold — Phase 4: Language Breadth (2.x+)
+## On Hold — Phase 4: Language Breadth (1.x → 2.x)
 
-> 言語ごとに 1 md。[jvm-family-via-coursier.md](on-hold/jvm-family-via-coursier.md) は
-> Scala / Clojure / Groovy の共通設計ノート (Coursier 経由 vs 直接 zip など)。
+> 本セッション (v0.15.0–v0.23.0) で **9 言語連続出荷、合計 18 backend** に到達。
+> 残り 7 言語 + LuaJIT で Phase 4 完了。
 
-### Single-binary 系 (難易度: 低)
+### Source-build 系 (難易度: 中-高)
+
+| 項目 | コメント |
+|---|---|
+| [LuaJIT](on-hold/luajit.md) | Lua 5.1 互換だが完全に別物。Lua 本体は v0.22.0 で先行出荷済 |
+| [PHP](on-hold/php.md) | source build、extension 地獄 |
+| [R](on-hold/r.md) | OS deps 重い、source build |
+| [Swift (server-side)](on-hold/swift.md) | Linux distro 別 tarball、PGP sig (新検証経路) |
+| [Elixir + Erlang](on-hold/elixir-and-erlang.md) | Erlang OTP source build、Elixir prebuilt zip。`requires = ["erlang"]` |
+
+### Bootstrap-installer wrap 系
+
+| 項目 | bootstrap | コメント |
+|---|---|---|
+| [OCaml](on-hold/ocaml.md) | opam | Haskell の no-space store パターンを流用予定 |
+
+### Single-binary 系
 
 | 項目 | 入手経路 | コメント |
 |---|---|---|
 | [Flutter](on-hold/flutter.md) | storage.googleapis.com | SDK ~700MB、Dart は v0.19.0 で先行出荷済 |
 
-### Source-build 系 (spawn_blocking 例外、難易度: 中-高)
+## On Hold — Phase 5: Hospitality Parity (2.x) ★ 新
 
-| 項目 | コメント |
-|---|---|
-| [LuaJIT](on-hold/luajit.md) | Lua 5.1 互換だが完全に別物。Lua 本体は v0.22.0 で先行出荷済 |
-| [PHP](on-hold/php.md) | php-build 利用、extension が地獄 |
-| [R](on-hold/r.md) | OS deps 重い、source build |
-| [Swift (server-side)](on-hold/swift.md) | Linux distro 別 tarball、PGP sig |
-| [Elixir + Erlang](on-hold/elixir-and-erlang.md) | Erlang OTP source build、Elixir prebuilt zip。`requires = ["erlang"]` |
-
-### Bootstrap-installer wrap 系 (qusp が installer を install して dispatch)
-
-| 項目 | bootstrap | コメント |
-|---|---|---|
-| [OCaml](on-hold/ocaml.md) | opam | base compiler build 5-15 分 |
-
-## On Hold — Phase 5: Reproducibility & Nix Bridge (3.x)
+> **新方針:** uv が Python 単体に対してやってる ergonomic 密度を 18+ 言語横断で再現する。
+> 設計の根拠と uv/mise/asdf 比較は **[hospitality-parity.md](on-hold/hospitality-parity.md)** 参照。
 
 | 項目 | 説明 | Grand Plan |
 |---|---|---|
-| [SBOM export](on-hold/sbom-export.md) | `qusp sbom` (SPDX/CycloneDX) | Phase 5 |
-| [Reproducibility audit](on-hold/reproducibility-audit.md) | `qusp verify` で手元 vs lock | Phase 5 |
-| [Nix L1: detect substitutes](on-hold/nix-l1.md) | `/nix/store` 既在を使い回す | Phase 5 |
-| [Nix L2: read flake.nix](on-hold/nix-l2.md) | flake.nix を resolution source に | Phase 5 |
-| [Nix L3: export nix](on-hold/nix-l3.md) | `qusp.toml` + `qusp.lock` → flake.nix | Phase 5 |
+| [Hospitality 概念 + 競争 position 定義](on-hold/hospitality-parity.md) | umbrella doc | Phase 5 |
+| [Did-you-mean fuzzy 全 backend 展開](on-hold/did-you-mean-cross-backend.md) | Python だけにある fuzzy を全 backend で | Phase 5 |
+| [Progress display を uv 級に揃える](on-hold/progress-display-uv-class.md) | spinner / ETA / "downloaded N of M" | Phase 5 |
+| [Cross-language tool install registry](on-hold/tool-registry-cross-language.md) | `qusp tool install ruff/gopls/scalafmt/...` | Phase 5 (Phase 3 を内包) |
+| [Inline script metadata (PEP 723 風)](on-hold/inline-script-metadata.md) | `# qusp: lua = 5.4.7` で auto pin | Phase 5 |
+| [Error richness: distribution defaults](on-hold/error-richness-distribution-defaults.md) | uv 級 actionable error | Phase 5 |
+| [shellenv auto-eval](on-hold/shellenv-auto-eval.md) | rcfile 編集を要求しない経路 (現状 D 案 = no-op で行く前提) | Phase 5 |
+
+## On Hold — Phase 6: Reproducibility & Nix Bridge (3.x)
+
+(旧 Phase 5。Hospitality を 2.x の主軸に上げたので 3.x へ後ろ倒し。)
+
+| 項目 | 説明 | Grand Plan |
+|---|---|---|
+| [SBOM export](on-hold/sbom-export.md) | `qusp sbom` (SPDX/CycloneDX) | Phase 6 |
+| [Reproducibility audit](on-hold/reproducibility-audit.md) | `qusp verify` で手元 vs lock | Phase 6 |
+| [Nix L1: detect substitutes](on-hold/nix-l1.md) | `/nix/store` 既在を使い回す | Phase 6 |
+| [Nix L2: read flake.nix](on-hold/nix-l2.md) | flake.nix を resolution source に | Phase 6 |
+| [Nix L3: export nix](on-hold/nix-l3.md) | `qusp.toml` + `qusp.lock` → flake.nix | Phase 6 |
 
 ## Done
 
@@ -90,8 +109,9 @@
 | [Dart backend](done/dart.md) | v0.19.0 | Phase 4 |
 | [Scala 3 backend](done/scala.md) | v0.20.0 | Phase 4 |
 | [Clojure backend](done/clojure.md) | v0.21.0 | Phase 4 |
-| [Lua backend](done/lua.md) | v0.22.0 | Phase 4 |
-| [Haskell backend (ghcup wrap)](done/haskell.md) | v0.23.0 | Phase 4 |
+| [Lua backend (source-build pattern 初投入)](done/lua.md) | v0.22.0 | Phase 4 |
+| [Haskell backend (ghcup wrap pattern 初投入)](done/haskell.md) | v0.23.0 | Phase 4 |
+| [`qusp x <script>` extension-routing (Phase 5 第一弾)](done/x-script-routing.md) | v0.24.0 | Phase 5 |
 | [e2e test scenarios](done/e2e-tests.md) | scripts/e2e/* | Phase 1 |
 | [Benchmark vs mise](done/benchmark-vs-mise.md) — shim mode 4× 速い実数 | scripts/bench.sh | Phase 1 |
 
