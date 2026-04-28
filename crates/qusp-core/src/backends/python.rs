@@ -28,15 +28,14 @@ pub struct PythonBackend;
 const REPO: &str = "astral-sh/python-build-standalone";
 
 #[derive(Deserialize, Debug)]
-struct GhRelease {
-    tag_name: String,
-    assets: Vec<GhAsset>,
+pub(crate) struct GhRelease {
+    pub(crate) assets: Vec<GhAsset>,
 }
 
 #[derive(Deserialize, Debug)]
-struct GhAsset {
-    name: String,
-    browser_download_url: String,
+pub(crate) struct GhAsset {
+    pub(crate) name: String,
+    pub(crate) browser_download_url: String,
 }
 
 fn target_triple() -> Option<&'static str> {
@@ -56,10 +55,6 @@ fn paths() -> Result<AnyvPaths> {
 
 fn python_root(p: &AnyvPaths, version: &str) -> PathBuf {
     p.data.join("python").join(version)
-}
-
-fn http_client() -> Result<reqwest::Client> {
-    crate::http::client(concat!("qusp-python/", env!("CARGO_PKG_VERSION")))
 }
 
 #[async_trait]
@@ -96,7 +91,7 @@ impl Backend for PythonBackend {
         _qusp_paths: &AnyvPaths,
         version: &str,
         _opts: &InstallOpts,
-        _http: &dyn crate::effects::HttpFetcher,
+        http: &dyn crate::effects::HttpFetcher,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -111,97 +106,43 @@ impl Backend for PythonBackend {
 
         let triple = target_triple()
             .ok_or_else(|| anyhow!("python-build-standalone has no asset for this platform"))?;
-        let client = http_client()?;
 
         // Walk the most-recent releases until we find one with the requested
         // version (the asset filename's prefix, before `+<build_tag>`).
         let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=20");
-        let releases: Vec<GhRelease> = crate::http::gh_auth(client.get(&url))
-            .header("Accept", "application/vnd.github+json")
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
+        let releases_text = http
+            .get_text_authenticated(&url)
             .await
+            .with_context(|| format!("fetch {url}"))?;
+        let releases: Vec<GhRelease> = serde_json::from_str(&releases_text)
             .context("parse python-build-standalone release index")?;
 
-        // PBS publishes a single "latest patch" per minor line, so an
-        // exact match for `3.13.0` may not exist while `3.13.5` does.
-        // Try exact first, then fall back to latest patch sharing the
-        // same `<major>.<minor>` prefix (so `3.13.0` resolves to the
-        // newest 3.13.x available).
-        let asset_suffix = format!("-{triple}-install_only_stripped.tar.gz");
-        let exact_prefix = format!("cpython-{version}+");
-        let asset = releases
-            .iter()
-            .flat_map(|r| r.assets.iter())
-            .find(|a| a.name.starts_with(&exact_prefix) && a.name.ends_with(&asset_suffix))
-            .or_else(|| {
-                let minor = python_minor_prefix(version);
-                let fuzzy_prefix = format!("cpython-{minor}.");
-                releases
-                    .iter()
-                    .flat_map(|r| r.assets.iter())
-                    .filter(|a| {
-                        a.name.starts_with(&fuzzy_prefix) && a.name.ends_with(&asset_suffix)
-                    })
-                    .max_by(|a, b| compare_pbs_asset_versions(&a.name, &b.name))
-            })
-            .ok_or_else(|| {
-                anyhow!(
-                    "no python-build-standalone asset found for {version} on {triple} \
-                     (looked at the {n} most recent releases). Try a different patch like \
-                     `python = \"{}.0\"` and qusp will auto-select the latest patch.",
-                    python_minor_prefix(version),
-                    n = releases.len(),
-                )
-            })?;
+        let asset = pick_pbs_asset(&releases, version, triple).ok_or_else(|| {
+            anyhow!(
+                "no python-build-standalone asset found for {version} on {triple} \
+                 (looked at the {n} most recent releases). Try a different patch like \
+                 `python = \"{}.0\"` and qusp will auto-select the latest patch.",
+                python_minor_prefix(version),
+                n = releases.len(),
+            )
+        })?;
 
-        // python-build-standalone publishes a single `SHA256SUMS` file per
-        // release (one line per asset: `<hash>  <filename>`). Find the
-        // release this asset belongs to so we can grab the matching SUMS.
-        let owning_release = releases
-            .iter()
-            .find(|r| r.assets.iter().any(|a| a.name == asset.name))
-            .ok_or_else(|| anyhow!("internal: lost track of asset's release"))?;
-        let sums_asset = owning_release
-            .assets
-            .iter()
-            .find(|a| a.name == "SHA256SUMS")
-            .ok_or_else(|| {
+        let (sums_url, asset_url) =
+            sums_and_asset_urls(&releases, &asset.name).ok_or_else(|| {
                 anyhow!(
-                    "release {} has no SHA256SUMS file; refusing to install without verification",
-                    owning_release.tag_name
+                    "release containing {} has no SHA256SUMS file; refusing to install without verification",
+                    asset.name
                 )
             })?;
-        let sums_text = client
-            .get(&sums_asset.browser_download_url)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("fetch {}", sums_asset.browser_download_url))?
-            .text()
-            .await?;
-        let expected = sums_text
-            .lines()
-            .find_map(|l| {
-                let mut parts = l.split_whitespace();
-                let hash = parts.next()?;
-                let filename = parts.next()?;
-                if filename == asset.name {
-                    Some(hash.to_string())
-                } else {
-                    None
-                }
-            })
+        let sums_text = http
+            .get_text(&sums_url)
+            .await
+            .with_context(|| format!("fetch {sums_url}"))?;
+        let expected = parse_sums_line(&sums_text, &asset.name)
             .ok_or_else(|| anyhow!("no entry for {} in SHA256SUMS", asset.name))?;
 
-        let bytes = client
-            .get(&asset.browser_download_url)
-            .send()
-            .await?
-            .error_for_status()?
-            .bytes()
+        let bytes = http
+            .get_bytes(&asset_url)
             .await
             .with_context(|| format!("download {}", asset.name))?;
 
@@ -314,19 +255,11 @@ impl Backend for PythonBackend {
         Ok(out)
     }
 
-    async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("qusp-python/", env!("CARGO_PKG_VERSION")))
-            .build()?;
+    async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
         let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=5");
-        let releases: Vec<GhRelease> = crate::http::gh_auth(client.get(&url))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "qusp")
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let body = http.get_text_authenticated(&url).await?;
+        let releases: Vec<GhRelease> =
+            serde_json::from_str(&body).context("parse PBS release index")?;
         let mut seen: BTreeSet<String> = BTreeSet::new();
         for r in &releases {
             for a in &r.assets {
@@ -403,6 +336,64 @@ fn python_minor_prefix(v: &str) -> String {
     }
 }
 
+/// Pure: pick the best PBS asset for a given version + triple. Tries
+/// exact match first, falls back to latest patch sharing the
+/// `<major>.<minor>` prefix.
+pub(crate) fn pick_pbs_asset<'a>(
+    releases: &'a [GhRelease],
+    version: &str,
+    triple: &str,
+) -> Option<&'a GhAsset> {
+    let asset_suffix = format!("-{triple}-install_only_stripped.tar.gz");
+    let exact_prefix = format!("cpython-{version}+");
+    if let Some(a) = releases
+        .iter()
+        .flat_map(|r| r.assets.iter())
+        .find(|a| a.name.starts_with(&exact_prefix) && a.name.ends_with(&asset_suffix))
+    {
+        return Some(a);
+    }
+    let minor = python_minor_prefix(version);
+    let fuzzy_prefix = format!("cpython-{minor}.");
+    releases
+        .iter()
+        .flat_map(|r| r.assets.iter())
+        .filter(|a| a.name.starts_with(&fuzzy_prefix) && a.name.ends_with(&asset_suffix))
+        .max_by(|a, b| compare_pbs_asset_versions(&a.name, &b.name))
+}
+
+/// Pure: given the release index and an asset name, return
+/// `(sums_url, asset_url)`.
+pub(crate) fn sums_and_asset_urls(
+    releases: &[GhRelease],
+    asset_name: &str,
+) -> Option<(String, String)> {
+    let owning = releases
+        .iter()
+        .find(|r| r.assets.iter().any(|a| a.name == asset_name))?;
+    let asset = owning.assets.iter().find(|a| a.name == asset_name)?;
+    let sums = owning.assets.iter().find(|a| a.name == "SHA256SUMS")?;
+    Some((
+        sums.browser_download_url.clone(),
+        asset.browser_download_url.clone(),
+    ))
+}
+
+/// Pure: parse a `SHA256SUMS` body and return the hash for the named
+/// asset. Lines look like `<hex>  <filename>`.
+pub(crate) fn parse_sums_line(body: &str, asset_name: &str) -> Option<String> {
+    body.lines().find_map(|l| {
+        let mut parts = l.split_whitespace();
+        let hash = parts.next()?;
+        let filename = parts.next()?;
+        if filename == asset_name {
+            Some(hash.to_string())
+        } else {
+            None
+        }
+    })
+}
+
 /// Compare two PBS asset filenames by the embedded patch+date. Higher
 /// patch wins; ties broken by build tag (date stamp).
 fn compare_pbs_asset_versions(a: &str, b: &str) -> std::cmp::Ordering {
@@ -422,4 +413,121 @@ fn compare_pbs_asset_versions(a: &str, b: &str) -> std::cmp::Ordering {
         (major, minor, patch, build)
     }
     key(a).cmp(&key(b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn release(_tag: &str, asset_names: &[&str]) -> GhRelease {
+        GhRelease {
+            assets: asset_names
+                .iter()
+                .map(|n| GhAsset {
+                    name: (*n).to_string(),
+                    browser_download_url: format!("https://example.test/{n}"),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn picks_exact_version_when_present() {
+        let rels = vec![release(
+            "20260414",
+            &[
+                "cpython-3.13.0+20260414-x86_64-apple-darwin-install_only_stripped.tar.gz",
+                "cpython-3.13.5+20260414-x86_64-apple-darwin-install_only_stripped.tar.gz",
+                "SHA256SUMS",
+            ],
+        )];
+        let pick = pick_pbs_asset(&rels, "3.13.0", "x86_64-apple-darwin").unwrap();
+        assert!(pick.name.starts_with("cpython-3.13.0+"));
+    }
+
+    #[test]
+    fn falls_back_to_latest_patch_within_minor() {
+        // PBS dropped 3.13.0 but still ships 3.13.13.
+        let rels = vec![release(
+            "20260414",
+            &[
+                "cpython-3.13.5+20260301-x86_64-apple-darwin-install_only_stripped.tar.gz",
+                "cpython-3.13.13+20260414-x86_64-apple-darwin-install_only_stripped.tar.gz",
+                "SHA256SUMS",
+            ],
+        )];
+        let pick = pick_pbs_asset(&rels, "3.13.0", "x86_64-apple-darwin").unwrap();
+        assert!(
+            pick.name.starts_with("cpython-3.13.13+"),
+            "should pick the latest 3.13.x, got {}",
+            pick.name
+        );
+    }
+
+    #[test]
+    fn fuzzy_match_picks_higher_build_tag_on_patch_tie() {
+        let rels = vec![
+            release(
+                "20260301",
+                &["cpython-3.13.5+20260301-x86_64-apple-darwin-install_only_stripped.tar.gz"],
+            ),
+            release(
+                "20260414",
+                &["cpython-3.13.5+20260414-x86_64-apple-darwin-install_only_stripped.tar.gz"],
+            ),
+        ];
+        let pick = pick_pbs_asset(&rels, "3.13.0", "x86_64-apple-darwin").unwrap();
+        assert!(
+            pick.name.contains("3.13.5+20260414"),
+            "should pick newer build tag, got {}",
+            pick.name
+        );
+    }
+
+    #[test]
+    fn picks_none_when_no_matching_minor() {
+        let rels = vec![release(
+            "20260414",
+            &["cpython-3.12.10+20260414-x86_64-apple-darwin-install_only_stripped.tar.gz"],
+        )];
+        assert!(pick_pbs_asset(&rels, "3.13.0", "x86_64-apple-darwin").is_none());
+    }
+
+    #[test]
+    fn sums_and_asset_urls_pair_correctly() {
+        let rels = vec![release(
+            "20260414",
+            &[
+                "cpython-3.13.5+20260414-x86_64-apple-darwin-install_only_stripped.tar.gz",
+                "SHA256SUMS",
+            ],
+        )];
+        let (sums_url, asset_url) = sums_and_asset_urls(
+            &rels,
+            "cpython-3.13.5+20260414-x86_64-apple-darwin-install_only_stripped.tar.gz",
+        )
+        .unwrap();
+        assert!(sums_url.ends_with("/SHA256SUMS"));
+        assert!(asset_url.contains("3.13.5+20260414"));
+    }
+
+    #[test]
+    fn parse_sums_line_finds_matching_asset() {
+        let body = "\
+abc111  cpython-3.13.5+20260414-x86_64-apple-darwin-install_only_stripped.tar.gz
+def222  cpython-3.12.10+20260414-x86_64-apple-darwin-install_only_stripped.tar.gz
+";
+        let hash = parse_sums_line(
+            body,
+            "cpython-3.13.5+20260414-x86_64-apple-darwin-install_only_stripped.tar.gz",
+        )
+        .unwrap();
+        assert_eq!(hash, "abc111");
+    }
+
+    #[test]
+    fn parse_sums_line_returns_none_for_missing_asset() {
+        let body = "abc111  some-other-file.tar.gz\n";
+        assert!(parse_sums_line(body, "cpython-x.y.z.tar.gz").is_none());
+    }
 }
