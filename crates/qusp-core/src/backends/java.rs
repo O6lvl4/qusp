@@ -181,8 +181,7 @@ impl Backend for JavaBackend {
             });
         }
 
-        let os = foojay_os()
-            .ok_or_else(|| anyhow!("Foojay has no JDK packaging for this OS"))?;
+        let os = foojay_os().ok_or_else(|| anyhow!("Foojay has no JDK packaging for this OS"))?;
         let arch = foojay_arch()
             .ok_or_else(|| anyhow!("Foojay has no JDK packaging for this architecture"))?;
         let archive_type = foojay_archive_type();
@@ -213,9 +212,7 @@ impl Backend for JavaBackend {
             .find(|p| p.release_status.eq_ignore_ascii_case("ga"))
             .or_else(|| pkgs.result.first())
             .ok_or_else(|| {
-                anyhow!(
-                    "Foojay returned no JDK matching {distribution} {version} on {os}/{arch}"
-                )
+                anyhow!("Foojay returned no JDK matching {distribution} {version} on {os}/{arch}")
             })?;
 
         // Step 2 — fetch package details (download URL + checksum).
@@ -237,8 +234,7 @@ impl Backend for JavaBackend {
 
         // Pull the expected sha256. Foojay sometimes inlines `checksum`,
         // sometimes only `checksum_uri`. Try inline first, fall back to GET.
-        let expected = if d.checksum_type.eq_ignore_ascii_case("sha256") && !d.checksum.is_empty()
-        {
+        let expected = if d.checksum_type.eq_ignore_ascii_case("sha256") && !d.checksum.is_empty() {
             d.checksum.clone()
         } else if !d.checksum_uri.is_empty() {
             let text = client
@@ -628,7 +624,11 @@ async fn resolve_maven(
     } else {
         version.to_string()
     };
-    let line = if v.starts_with("4.") { "maven-4" } else { "maven-3" };
+    let line = if v.starts_with("4.") {
+        "maven-4"
+    } else {
+        "maven-3"
+    };
     let asset = format!("apache-maven-{v}-bin.tar.gz");
     let asset_url = format!("https://archive.apache.org/dist/maven/{line}/{v}/binaries/{asset}");
     let sha_url = format!("{asset_url}.sha512");
@@ -704,7 +704,12 @@ async fn latest_maven_version(client: &reqwest::Client) -> Result<String> {
         .split('"')
         .filter(|s| !s.is_empty())
         .filter_map(|s| s.strip_suffix('/'))
-        .filter(|s| s.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false))
+        .filter(|s| {
+            s.chars()
+                .next()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false)
+        })
         .map(String::from)
         .collect();
     versions.sort_by(|a, b| version_cmp(b, a));

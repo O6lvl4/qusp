@@ -210,11 +210,19 @@ impl Backend for DenoBackend {
         }
         #[cfg(unix)]
         std::os::unix::fs::symlink(&store_dir, &install_dir).with_context(|| {
-            format!("symlink {} → {}", install_dir.display(), store_dir.display())
+            format!(
+                "symlink {} → {}",
+                install_dir.display(),
+                store_dir.display()
+            )
         })?;
         #[cfg(windows)]
         std::os::windows::fs::symlink_dir(&store_dir, &install_dir).with_context(|| {
-            format!("symlink {} → {}", install_dir.display(), store_dir.display())
+            format!(
+                "symlink {} → {}",
+                install_dir.display(),
+                store_dir.display()
+            )
         })?;
 
         let _ = std::fs::remove_file(&cache_path);

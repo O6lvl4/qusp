@@ -9,7 +9,7 @@ use anyv_core::Paths;
 use futures::future::try_join_all;
 
 use crate::backend::{Backend, InstallOpts, LockedTool, ResolvedTool, ToolSpec};
-use crate::lock::{Lock, LockedBackend};
+use crate::lock::Lock;
 use crate::manifest::Manifest;
 use crate::registry::BackendRegistry;
 
@@ -43,8 +43,12 @@ impl<'a> Orchestrator<'a> {
     pub async fn install_toolchains(&self, manifest: &Manifest) -> Result<Vec<InstallSummary>> {
         let mut futs = Vec::new();
         for (lang, sec) in &manifest.languages {
-            let Some(version) = sec.version.clone() else { continue; };
-            let Some(backend) = self.registry.get(lang) else { continue; };
+            let Some(version) = sec.version.clone() else {
+                continue;
+            };
+            let Some(backend) = self.registry.get(lang) else {
+                continue;
+            };
             let paths = self.paths.clone();
             let lang = lang.clone();
             let opts = InstallOpts {
@@ -78,7 +82,9 @@ impl<'a> Orchestrator<'a> {
                 planned.push((lang.clone(), name.clone(), spec.clone()));
             }
         }
-        if planned.is_empty() { return Ok(vec![]); }
+        if planned.is_empty() {
+            return Ok(vec![]);
+        }
 
         // Resolve in parallel.
         let mut resolve_futs = Vec::new();
@@ -93,18 +99,24 @@ impl<'a> Orchestrator<'a> {
                     .backends
                     .get(&lang)
                     .and_then(|b| b.tools.iter().find(|t| t.name == name).cloned())
-                    .ok_or_else(|| anyhow!(
+                    .ok_or_else(|| {
+                        anyhow!(
                         "frozen sync: {lang} tool '{name}' is in qusp.toml but not in qusp.lock"
-                    ))?;
+                    )
+                    })?;
                 resolve_futs.push(Box::pin(async move {
-                    Ok::<_, anyhow::Error>((lang, ResolvedTool {
-                        name: prev.name,
-                        package: prev.package,
-                        version: prev.version,
-                        bin: prev.bin,
-                        upstream_hash: prev.upstream_hash,
-                    }))
-                }) as std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send>>);
+                    Ok::<_, anyhow::Error>((
+                        lang,
+                        ResolvedTool {
+                            name: prev.name,
+                            package: prev.package,
+                            version: prev.version,
+                            bin: prev.bin,
+                            upstream_hash: prev.upstream_hash,
+                        },
+                    ))
+                })
+                    as std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send>>);
             } else {
                 let spec = spec.clone();
                 let client = client.clone();
@@ -119,7 +131,9 @@ impl<'a> Orchestrator<'a> {
         // Install in parallel.
         let mut install_futs = Vec::new();
         for (lang, r) in resolved {
-            let Some(backend) = self.registry.get(&lang) else { continue; };
+            let Some(backend) = self.registry.get(&lang) else {
+                continue;
+            };
             let toolchain_version = manifest
                 .languages
                 .get(&lang)
@@ -129,7 +143,9 @@ impl<'a> Orchestrator<'a> {
             let r_clone = r.clone();
             let lang_clone = lang.clone();
             install_futs.push(async move {
-                let locked = backend.install_tool(&paths, &toolchain_version, &r_clone).await?;
+                let locked = backend
+                    .install_tool(&paths, &toolchain_version, &r_clone)
+                    .await?;
                 Ok::<_, anyhow::Error>((lang_clone, locked))
             });
         }
@@ -137,10 +153,7 @@ impl<'a> Orchestrator<'a> {
 
         // Update lock.
         for (lang, locked) in &installed {
-            let entry = lock
-                .backends
-                .entry(lang.clone())
-                .or_insert_with(LockedBackend::default);
+            let entry = lock.backends.entry(lang.clone()).or_default();
             if entry.version.is_empty() {
                 if let Some(v) = manifest.languages.get(lang).and_then(|s| s.version.clone()) {
                     entry.version = v;
@@ -175,11 +188,10 @@ impl<'a> Orchestrator<'a> {
     /// reflect the manifest after install.
     pub fn sync_toolchain_versions(&self, manifest: &Manifest, lock: &mut Lock) {
         for (lang, sec) in &manifest.languages {
-            let Some(v) = sec.version.clone() else { continue; };
-            let entry = lock
-                .backends
-                .entry(lang.clone())
-                .or_insert_with(LockedBackend::default);
+            let Some(v) = sec.version.clone() else {
+                continue;
+            };
+            let entry = lock.backends.entry(lang.clone()).or_default();
             entry.version = v;
             entry.distribution = sec.distribution.clone().unwrap_or_default();
         }
@@ -197,7 +209,11 @@ impl<'a> Orchestrator<'a> {
         let langs = self.install_toolchains(manifest).await?;
         self.sync_toolchain_versions(manifest, lock);
         let tools = self.install_tools(manifest, lock, frozen, client).await?;
-        let removed = if !frozen { self.prune_stale_tools(manifest, lock) } else { 0 };
+        let removed = if !frozen {
+            self.prune_stale_tools(manifest, lock)
+        } else {
+            0
+        };
         Ok(SyncSummary {
             langs_installed: langs,
             tools_installed: tools,
@@ -233,12 +249,16 @@ impl<'a> Orchestrator<'a> {
             .languages
             .get(&lang)
             .and_then(|s| s.version.clone())
-            .ok_or_else(|| anyhow!(
-                "[{lang}] version is not pinned in qusp.toml — add it before installing tools"
-            ))?;
+            .ok_or_else(|| {
+                anyhow!(
+                    "[{lang}] version is not pinned in qusp.toml — add it before installing tools"
+                )
+            })?;
         let spec = ToolSpec::Short(version.to_string());
         let resolved = backend.resolve_tool(client, name, &spec).await?;
-        let locked = backend.install_tool(self.paths, &toolchain_version, &resolved).await?;
+        let locked = backend
+            .install_tool(self.paths, &toolchain_version, &resolved)
+            .await?;
         let distribution = manifest
             .languages
             .get(&lang)
@@ -248,7 +268,9 @@ impl<'a> Orchestrator<'a> {
         sec.tools.insert(name.to_string(), spec);
         // Update lock.
         let entry = lock.backends.entry(lang.clone()).or_default();
-        if entry.version.is_empty() { entry.version = toolchain_version.clone(); }
+        if entry.version.is_empty() {
+            entry.version = toolchain_version.clone();
+        }
         if entry.distribution.is_empty() {
             entry.distribution = distribution.unwrap_or_default();
         }
@@ -288,19 +310,31 @@ impl<'a> Orchestrator<'a> {
         let order: Vec<String> = if let Some(p) = prefer_lang {
             let mut o: Vec<String> = vec![p.to_string()];
             for id in self.registry.ids() {
-                if id != p { o.push(id.to_string()); }
+                if id != p {
+                    o.push(id.to_string());
+                }
             }
             o
         } else {
             self.registry.ids().map(String::from).collect()
         };
         for lang in order {
-            let Some(backend) = self.registry.get(&lang) else { continue; };
-            let Some(entry) = lock.backends.get(&lang) else { continue; };
-            if entry.version.is_empty() { continue; }
+            let Some(backend) = self.registry.get(&lang) else {
+                continue;
+            };
+            let Some(entry) = lock.backends.get(&lang) else {
+                continue;
+            };
+            if entry.version.is_empty() {
+                continue;
+            }
             let env = backend.build_run_env(self.paths, &entry.version, cwd)?;
-            for p in env.path_prepend { merged.path_prepend.push(p); }
-            for (k, v) in env.env { merged.env.insert(k, v); }
+            for p in env.path_prepend {
+                merged.path_prepend.push(p);
+            }
+            for (k, v) in env.env {
+                merged.env.insert(k, v);
+            }
         }
         Ok(merged)
     }

@@ -122,7 +122,9 @@ pub trait Backend: Send + Sync {
     /// the orchestrator to route `qusp add tool <name>` to the right
     /// backend without firing slow network calls. Default `false` —
     /// backends with a known tool list override.
-    fn knows_tool(&self, _name: &str) -> bool { false }
+    fn knows_tool(&self, _name: &str) -> bool {
+        false
+    }
 
     /// Detect the version pinned by manifests. `Ok(None)` if no source
     /// pins one (caller falls through to global / latest installed).

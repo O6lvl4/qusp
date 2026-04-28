@@ -465,45 +465,45 @@ fn resolve_bin(
     Ok(p)
 }
 
-/// Verify an npm `dist.integrity` value (`sha512-<base64>` or `sha256-…`,
-/// optionally space-separated alternatives).
+/// Verify an npm `dist.integrity` value (`sha512-<base64>` or `sha256-…`).
+/// npm's spec allows space-separated alternatives but in practice every
+/// publisher emits one; if the first verifies, we accept.
 fn verify_npm_integrity(integrity: &str, bytes: &[u8]) -> Result<()> {
-    for spec in integrity.split_whitespace() {
-        let (algo, b64) = spec
-            .split_once('-')
-            .ok_or_else(|| anyhow!("malformed integrity '{spec}'"))?;
-        let expected = base64::engine::general_purpose::STANDARD
-            .decode(b64)
-            .with_context(|| format!("decode integrity for {algo}"))?;
-        let actual: Vec<u8> = match algo {
-            "sha512" => sha2::Sha512::digest(bytes).to_vec(),
-            "sha384" => {
-                use sha2::Sha384;
-                Sha384::digest(bytes).to_vec()
-            }
-            "sha256" => sha2::Sha256::digest(bytes).to_vec(),
-            other => bail!("integrity algorithm '{other}' is not supported"),
-        };
-        if actual == expected {
-            return Ok(());
-        } else {
-            bail!(
-                "{algo} integrity mismatch: expected {} bytes, got {} bytes; expected != actual",
-                expected.len(),
-                actual.len()
-            );
+    let spec = integrity
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| anyhow!("empty integrity field"))?;
+    let (algo, b64) = spec
+        .split_once('-')
+        .ok_or_else(|| anyhow!("malformed integrity '{spec}'"))?;
+    let expected = base64::engine::general_purpose::STANDARD
+        .decode(b64)
+        .with_context(|| format!("decode integrity for {algo}"))?;
+    let actual: Vec<u8> = match algo {
+        "sha512" => sha2::Sha512::digest(bytes).to_vec(),
+        "sha384" => {
+            use sha2::Sha384;
+            Sha384::digest(bytes).to_vec()
         }
+        "sha256" => sha2::Sha256::digest(bytes).to_vec(),
+        other => bail!("integrity algorithm '{other}' is not supported"),
+    };
+    if actual == expected {
+        Ok(())
+    } else {
+        bail!(
+            "{algo} integrity mismatch for npm tarball ({} bytes expected, {} bytes computed)",
+            expected.len(),
+            actual.len()
+        )
     }
-    bail!("empty integrity field")
 }
 
 /// Take the integrity hash bytes (post-base64-decode) and hex-prefix
 /// the first 8 bytes for use as a content-addressed store dir.
 fn integrity_hex_prefix(integrity: &str) -> Option<String> {
     let (_, b64) = integrity.split_whitespace().next()?.split_once('-')?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(b64)
-        .ok()?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
     Some(hex::encode(&bytes[..8.min(bytes.len())]))
 }
 

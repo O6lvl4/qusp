@@ -1,0 +1,195 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "v*.*.*-*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re)build (e.g. v0.6.0)"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_PROFILE_RELEASE_LTO: "fat"
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+            cross: false
+          - target: x86_64-apple-darwin
+            runner: macos-14
+            cross: false
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            cross: false
+            apt: musl-tools
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-latest
+            cross: true
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            cross: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install cross compile prerequisites (linux x86_64-musl)
+        if: matrix.apt
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.apt }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: install cross
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: build (native)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin qusp
+
+      - name: build (cross)
+        if: matrix.cross
+        run: cross build --release --locked --target ${{ matrix.target }} --bin qusp
+
+      - name: stage artifacts
+        shell: bash
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          stage="qusp-${TAG}-${TARGET}"
+          mkdir -p "dist/${stage}"
+          ext=""
+          if [[ "$TARGET" == *windows* ]]; then ext=".exe"; fi
+          cp "target/${TARGET}/release/qusp${ext}" "dist/${stage}/qusp${ext}"
+          cp README.md LICENSE "dist/${stage}/" 2>/dev/null || true
+          cd dist
+          tar -czf "${stage}.tar.gz" "${stage}"
+          if command -v shasum >/dev/null 2>&1; then
+            shasum -a 256 "${stage}.tar.gz" > "${stage}.tar.gz.sha256"
+          elif command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${stage}.tar.gz" > "${stage}.tar.gz.sha256"
+          else
+            openssl dgst -sha256 -r "${stage}.tar.gz" > "${stage}.tar.gz.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qusp-${{ matrix.target }}
+          path: dist/*.tar.gz*
+          retention-days: 7
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: list artifacts
+        run: ls -la dist/
+
+      - name: combined checksums
+        run: cd dist && shasum -a 256 *.tar.gz > SHA256SUMS
+
+      - name: publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/SHA256SUMS
+
+  bump-tap:
+    name: bump homebrew tap
+    needs: release
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.event.inputs.tag || github.ref_name, '-') }}
+    steps:
+      - name: checkout qusp (for the formula template)
+        uses: actions/checkout@v4
+
+      - name: fetch SHA256SUMS from the just-published release
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          curl -fsSL "https://github.com/O6lvl4/qusp/releases/download/${TAG}/SHA256SUMS" -o SHA256SUMS
+          cat SHA256SUMS
+
+      - name: render Formula/qusp.rb
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          sha_for() {
+            awk -v f="qusp-v${VERSION}-$1.tar.gz" '$2 == f { print $1 }' SHA256SUMS
+          }
+          SHA_DARWIN_ARM64=$(sha_for aarch64-apple-darwin)
+          SHA_DARWIN_X86_64=$(sha_for x86_64-apple-darwin)
+          SHA_LINUX_ARM64=$(sha_for aarch64-unknown-linux-musl)
+          SHA_LINUX_X86_64=$(sha_for x86_64-unknown-linux-musl)
+          for s in "$SHA_DARWIN_ARM64" "$SHA_DARWIN_X86_64" "$SHA_LINUX_ARM64" "$SHA_LINUX_X86_64"; do
+            [ -n "$s" ] || { echo "missing sha for one or more targets" >&2; exit 1; }
+          done
+          mkdir -p out/Formula
+          sed \
+            -e "s|{{VERSION}}|${VERSION}|g" \
+            -e "s|{{SHA_DARWIN_ARM64}}|${SHA_DARWIN_ARM64}|g" \
+            -e "s|{{SHA_DARWIN_X86_64}}|${SHA_DARWIN_X86_64}|g" \
+            -e "s|{{SHA_LINUX_ARM64}}|${SHA_LINUX_ARM64}|g" \
+            -e "s|{{SHA_LINUX_X86_64}}|${SHA_LINUX_X86_64}|g" \
+            packaging/homebrew/qusp.rb.template > out/Formula/qusp.rb
+          echo "--- rendered formula ---"
+          cat out/Formula/qusp.rb
+
+      - name: checkout homebrew-tap
+        uses: actions/checkout@v4
+        with:
+          repository: O6lvl4/homebrew-tap
+          ssh-key: ${{ secrets.TAP_DEPLOY_KEY }}
+          path: tap
+
+      - name: commit & push
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          cp out/Formula/qusp.rb tap/Formula/qusp.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/qusp.rb
+          if git diff --cached --quiet; then
+            echo "tap formula already at v${VERSION}; nothing to commit"
+            exit 0
+          fi
+          git commit -m "qusp: bump to v${VERSION}"
+          git push origin HEAD:main
