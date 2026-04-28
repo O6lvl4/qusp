@@ -49,10 +49,6 @@ fn strip_v(v: &str) -> &str {
     v.strip_prefix('v').unwrap_or(v)
 }
 
-fn http_client() -> Result<reqwest::Client> {
-    crate::http::client(concat!("qusp-deno/", env!("CARGO_PKG_VERSION")))
-}
-
 #[derive(Deserialize, Debug)]
 struct GhRelease {
     tag_name: String,
@@ -95,7 +91,7 @@ impl Backend for DenoBackend {
         _: &AnyvPaths,
         version: &str,
         _opts: &InstallOpts,
-        _http: &dyn crate::effects::HttpFetcher,
+        http: &dyn crate::effects::HttpFetcher,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -109,7 +105,6 @@ impl Backend for DenoBackend {
         }
         let triple = target_triple()
             .ok_or_else(|| anyhow!("denoland/deno has no asset for this platform"))?;
-        let client = http_client()?;
         let v_strip = strip_v(version);
         // Deno tags are `vX.Y.Z`.
         let tag = format!("v{v_strip}");
@@ -118,28 +113,20 @@ impl Backend for DenoBackend {
         let asset_url = format!("https://github.com/{REPO}/releases/download/{tag}/{asset}");
         let sums_url = format!("https://github.com/{REPO}/releases/download/{tag}/{sums_asset}");
 
-        let sums_text = client
-            .get(&sums_url)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("fetch {sums_url}"))?
-            .text()
-            .await?;
+        let sums_text = http
+            .get_text(&sums_url)
+            .await
+            .with_context(|| format!("fetch {sums_url}"))?;
         let expected = sums_text
             .split_whitespace()
             .next()
             .ok_or_else(|| anyhow!("empty .sha256sum response for {asset}"))?
             .to_string();
 
-        let bytes = client
-            .get(&asset_url)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("download {asset_url}"))?
-            .bytes()
-            .await?;
+        let bytes = http
+            .get_bytes(&asset_url)
+            .await
+            .with_context(|| format!("download {asset_url}"))?;
 
         let cache_path = paths.cache.join(&asset);
         anyv_core::paths::ensure_dir(&paths.cache)?;
@@ -259,19 +246,11 @@ impl Backend for DenoBackend {
         Ok(out)
     }
 
-    async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("qusp-deno/", env!("CARGO_PKG_VERSION")))
-            .build()?;
+    async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
         let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=30");
-        let releases: Vec<GhRelease> = crate::http::gh_auth(client.get(&url))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "qusp")
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let body = http.get_text_authenticated(&url).await?;
+        let releases: Vec<GhRelease> =
+            serde_json::from_str(&body).context("parse denoland/deno release index")?;
         let mut out: Vec<String> = releases
             .into_iter()
             .map(|r| strip_v(&r.tag_name).to_string())

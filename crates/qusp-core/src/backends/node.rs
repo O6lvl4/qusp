@@ -70,10 +70,6 @@ fn tools_root(p: &AnyvPaths) -> PathBuf {
     p.data.join("node-tools")
 }
 
-fn http_client() -> Result<reqwest::Client> {
-    crate::http::client(concat!("qusp-node/", env!("CARGO_PKG_VERSION")))
-}
-
 fn strip_v(v: &str) -> &str {
     v.strip_prefix('v').unwrap_or(v)
 }
@@ -146,7 +142,7 @@ impl Backend for NodeBackend {
         _qusp_paths: &AnyvPaths,
         version: &str,
         _opts: &InstallOpts,
-        _http: &dyn crate::effects::HttpFetcher,
+        http: &dyn crate::effects::HttpFetcher,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -160,42 +156,22 @@ impl Backend for NodeBackend {
         }
         let triple =
             target_triple().ok_or_else(|| anyhow!("nodejs.org has no asset for this platform"))?;
-        let client = http_client()?;
         let v = with_v(version);
         let asset = format!("node-{v}-{triple}.tar.gz");
         let asset_url = format!("{DIST_BASE}/{v}/{asset}");
         let sums_url = format!("{DIST_BASE}/{v}/SHASUMS256.txt");
 
-        let sums = client
-            .get(&sums_url)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("fetch {sums_url}"))?
-            .text()
-            .await?;
-        let expected = sums
-            .lines()
-            .find_map(|l| {
-                let mut parts = l.split_whitespace();
-                let hash = parts.next()?;
-                let filename = parts.next()?;
-                if filename == asset {
-                    Some(hash.to_string())
-                } else {
-                    None
-                }
-            })
+        let sums = http
+            .get_text(&sums_url)
+            .await
+            .with_context(|| format!("fetch {sums_url}"))?;
+        let expected = parse_shasums_line(&sums, &asset)
             .ok_or_else(|| anyhow!("no entry for {asset} in SHASUMS256.txt"))?;
 
-        let bytes = client
-            .get(&asset_url)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("download {asset_url}"))?
-            .bytes()
-            .await?;
+        let bytes = http
+            .get_bytes(&asset_url)
+            .await
+            .with_context(|| format!("download {asset_url}"))?;
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let actual = hex::encode(hasher.finalize());
@@ -280,16 +256,11 @@ impl Backend for NodeBackend {
         Ok(out)
     }
 
-    async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
-        let client = http_client()?;
+    async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
         let url = format!("{DIST_BASE}/index.json");
-        let entries: Vec<NodeIndexEntry> = client
-            .get(&url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let body = http.get_text(&url).await?;
+        let entries: Vec<NodeIndexEntry> =
+            serde_json::from_str(&body).context("parse nodejs.org index.json")?;
         let mut out = Vec::with_capacity(entries.len());
         for e in entries {
             // Surface LTS names alongside the version (informational).
@@ -302,11 +273,10 @@ impl Backend for NodeBackend {
 
     async fn resolve_tool(
         &self,
-        _http: &dyn crate::effects::HttpFetcher,
+        http: &dyn crate::effects::HttpFetcher,
         name: &str,
         spec: &ToolSpec,
     ) -> Result<ResolvedTool> {
-        let client = http_client()?;
         let pkg = spec
             .package_override()
             .map(String::from)
@@ -323,14 +293,11 @@ impl Backend for NodeBackend {
         } else {
             format!("{NPM_REGISTRY}/{pkg}/{version}")
         };
-        let p: NpmPackument = client
-            .get(&url)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("fetch {url}"))?
-            .json()
+        let body = http
+            .get_text(&url)
             .await
+            .with_context(|| format!("fetch {url}"))?;
+        let p: NpmPackument = serde_json::from_str(&body)
             .with_context(|| format!("parse npm packument for {pkg}"))?;
         let bin = pick_bin(&p.bin, name, &pkg).unwrap_or_else(|| name.to_string());
         Ok(ResolvedTool {
@@ -345,32 +312,24 @@ impl Backend for NodeBackend {
     async fn install_tool(
         &self,
         _qusp_paths: &AnyvPaths,
-        _http: &dyn crate::effects::HttpFetcher,
+        http: &dyn crate::effects::HttpFetcher,
         toolchain_version: &str,
         resolved: &ResolvedTool,
     ) -> Result<LockedTool> {
         let paths = paths()?;
-        let client = http_client()?;
         // Refetch the packument to get the canonical tarball URL.
         let url = format!("{}/{}/{}", NPM_REGISTRY, resolved.package, resolved.version);
-        let p: NpmPackument = client
-            .get(&url)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("fetch {url}"))?
-            .json()
-            .await?;
+        let body = http
+            .get_text(&url)
+            .await
+            .with_context(|| format!("fetch {url}"))?;
+        let p: NpmPackument = serde_json::from_str(&body).context("parse npm packument")?;
         let tarball = p.dist.tarball;
         let integrity = p.dist.integrity.clone();
-        let bytes = client
-            .get(&tarball)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("download {tarball}"))?
-            .bytes()
-            .await?;
+        let bytes = http
+            .get_bytes(&tarball)
+            .await
+            .with_context(|| format!("download {tarball}"))?;
         verify_npm_integrity(&integrity, &bytes)
             .with_context(|| format!("integrity check failed for {}", resolved.package))?;
 
@@ -465,6 +424,21 @@ fn resolve_bin(
         );
     }
     Ok(p)
+}
+
+/// Pure: parse one matching line out of a `SHASUMS256.txt` body.
+/// Format is `<hash>  <filename>`.
+pub(crate) fn parse_shasums_line(body: &str, asset: &str) -> Option<String> {
+    body.lines().find_map(|l| {
+        let mut parts = l.split_whitespace();
+        let hash = parts.next()?;
+        let filename = parts.next()?;
+        if filename == asset {
+            Some(hash.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 /// Verify an npm `dist.integrity` value (`sha512-<base64>` or `sha256-…`).

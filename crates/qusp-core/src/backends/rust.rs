@@ -50,10 +50,6 @@ fn rust_root(p: &AnyvPaths, version: &str) -> PathBuf {
     p.data.join("rust").join(version)
 }
 
-fn http_client() -> Result<reqwest::Client> {
-    crate::http::client(concat!("qusp-rust/", env!("CARGO_PKG_VERSION")))
-}
-
 #[async_trait]
 impl Backend for RustBackend {
     fn id(&self) -> &'static str {
@@ -104,7 +100,7 @@ impl Backend for RustBackend {
         _: &AnyvPaths,
         version: &str,
         _opts: &InstallOpts,
-        _http: &dyn crate::effects::HttpFetcher,
+        http: &dyn crate::effects::HttpFetcher,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -118,11 +114,10 @@ impl Backend for RustBackend {
         }
         let triple = target_triple()
             .ok_or_else(|| anyhow!("static.rust-lang.org has no asset for this platform"))?;
-        let client = http_client()?;
         // Resolve channel names (stable/beta/nightly) to a concrete version
         // by reading the channel manifest.
         let resolved_version = if matches!(version, "stable" | "beta" | "nightly") {
-            resolve_channel(&client, version).await?
+            resolve_channel(http, version).await?
         } else {
             version.to_string()
         };
@@ -130,28 +125,20 @@ impl Backend for RustBackend {
         let asset_url = format!("{DIST_BASE}/{asset}");
         let sha_url = format!("{asset_url}.sha256");
 
-        let sha_text = client
-            .get(&sha_url)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("fetch {sha_url}"))?
-            .text()
-            .await?;
+        let sha_text = http
+            .get_text(&sha_url)
+            .await
+            .with_context(|| format!("fetch {sha_url}"))?;
         let expected = sha_text
             .split_whitespace()
             .next()
             .ok_or_else(|| anyhow!("empty sha256 sidecar for {asset}"))?
             .to_string();
 
-        let bytes = client
-            .get(&asset_url)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("download {asset_url}"))?
-            .bytes()
-            .await?;
+        let bytes = http
+            .get_bytes(&asset_url)
+            .await
+            .with_context(|| format!("download {asset_url}"))?;
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let actual = hex::encode(hasher.finalize());
@@ -235,14 +222,11 @@ impl Backend for RustBackend {
         Ok(out)
     }
 
-    async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("qusp-rust/", env!("CARGO_PKG_VERSION")))
-            .build()?;
+    async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
         // Resolved stable first so consumers (e.g. `qusp outdated`) treat
         // the concrete version as "newest". Channel pointers follow for
         // human reference.
-        let stable = resolve_channel(&client, "stable").await.unwrap_or_default();
+        let stable = resolve_channel(http, "stable").await.unwrap_or_default();
         let mut out = Vec::new();
         if !stable.is_empty() {
             out.push(stable);
@@ -297,16 +281,20 @@ impl Backend for RustBackend {
 ///   section, each with its own `version = "X.Y.Z (commit-sha date)"`.
 /// We want `[pkg.rust]`'s version, which mirrors what `rustup install
 /// stable` resolves to.
-async fn resolve_channel(client: &reqwest::Client, channel: &str) -> Result<String> {
+async fn resolve_channel(http: &dyn crate::effects::HttpFetcher, channel: &str) -> Result<String> {
     let url = format!("{DIST_BASE}/channel-rust-{channel}.toml");
-    let body = client
-        .get(&url)
-        .send()
-        .await?
-        .error_for_status()
-        .with_context(|| format!("fetch {url}"))?
-        .text()
-        .await?;
+    let body = http
+        .get_text(&url)
+        .await
+        .with_context(|| format!("fetch {url}"))?;
+    parse_channel_rust_version(&body, channel).ok_or_else(|| {
+        anyhow!("could not parse [pkg.rust] version from channel-rust-{channel}.toml")
+    })
+}
+
+/// Pure: scan a `channel-rust-<channel>.toml` body for `[pkg.rust]` and
+/// return the bare version (e.g. `1.95.0`).
+pub(crate) fn parse_channel_rust_version(body: &str, _channel: &str) -> Option<String> {
     let mut in_rust_section = false;
     for line in body.lines() {
         let line = line.trim();
@@ -322,12 +310,12 @@ async fn resolve_channel(client: &reqwest::Client, channel: &str) -> Result<Stri
                 let raw = &rest[..end];
                 // raw looks like `1.85.0 (commit-sha YYYY-MM-DD)`.
                 if let Some(v) = raw.split_whitespace().next() {
-                    return Ok(v.to_string());
+                    return Some(v.to_string());
                 }
             }
         }
     }
-    bail!("could not parse [pkg.rust] version from channel-rust-{channel}.toml")
+    None
 }
 
 /// The unified Rust tarball expands to one top-level directory like
@@ -445,4 +433,42 @@ fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
         )
     }
     parts(a).cmp(&parts(b))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_manifest_parser_skips_pkg_cargo() {
+        let body = r#"manifest-version = "2"
+date = "2026-04-16"
+
+[pkg.cargo]
+version = "0.96.0 (f2d3ce0bd 2026-03-21)"
+
+[pkg.rust]
+version = "1.95.0 (abc 2026-04-16)"
+"#;
+        assert_eq!(
+            parse_channel_rust_version(body, "stable").as_deref(),
+            Some("1.95.0")
+        );
+    }
+
+    #[test]
+    fn channel_manifest_returns_none_when_section_missing() {
+        let body = r#"manifest-version = "2"
+
+[pkg.cargo]
+version = "0.96.0"
+"#;
+        assert!(parse_channel_rust_version(body, "stable").is_none());
+    }
+
+    #[test]
+    fn rust_toolchain_toml_channel_extracted() {
+        let raw = "[toolchain]\nchannel = \"1.78.0\"\n";
+        assert_eq!(parse_toolchain_channel(raw).as_deref(), Some("1.78.0"));
+    }
 }

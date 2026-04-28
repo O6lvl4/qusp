@@ -51,10 +51,6 @@ fn strip_v(v: &str) -> &str {
     v.strip_prefix('v').unwrap_or(v)
 }
 
-fn http_client() -> Result<reqwest::Client> {
-    crate::http::client(concat!("qusp-kotlin/", env!("CARGO_PKG_VERSION")))
-}
-
 #[async_trait]
 impl Backend for KotlinBackend {
     fn id(&self) -> &'static str {
@@ -95,7 +91,7 @@ impl Backend for KotlinBackend {
         _: &AnyvPaths,
         version: &str,
         _opts: &InstallOpts,
-        _http: &dyn crate::effects::HttpFetcher,
+        http: &dyn crate::effects::HttpFetcher,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -107,35 +103,26 @@ impl Backend for KotlinBackend {
                 already_present: true,
             });
         }
-        let client = http_client()?;
         let v = strip_v(version);
         let tag = format!("v{v}");
         let asset = format!("kotlin-compiler-{v}.zip");
         let asset_url = format!("https://github.com/{REPO}/releases/download/{tag}/{asset}");
         let sha_url = format!("{asset_url}.sha256");
 
-        let sha_text = client
-            .get(&sha_url)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("fetch {sha_url}"))?
-            .text()
-            .await?;
+        let sha_text = http
+            .get_text(&sha_url)
+            .await
+            .with_context(|| format!("fetch {sha_url}"))?;
         let expected = sha_text
             .split_whitespace()
             .next()
             .ok_or_else(|| anyhow!("empty .sha256 for {asset}"))?
             .to_string();
 
-        let bytes = client
-            .get(&asset_url)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("download {asset_url}"))?
-            .bytes()
-            .await?;
+        let bytes = http
+            .get_bytes(&asset_url)
+            .await
+            .with_context(|| format!("download {asset_url}"))?;
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let actual = hex::encode(hasher.finalize());
@@ -229,10 +216,7 @@ impl Backend for KotlinBackend {
         Ok(out)
     }
 
-    async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("qusp-kotlin/", env!("CARGO_PKG_VERSION")))
-            .build()?;
+    async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
         #[derive(serde::Deserialize)]
         struct R {
             tag_name: String,
@@ -240,14 +224,9 @@ impl Backend for KotlinBackend {
             prerelease: bool,
         }
         let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=30");
-        let releases: Vec<R> = crate::http::gh_auth(client.get(&url))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "qusp")
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let body = http.get_text_authenticated(&url).await?;
+        let releases: Vec<R> =
+            serde_json::from_str(&body).context("parse JetBrains/kotlin release index")?;
         let mut out: Vec<String> = releases
             .into_iter()
             .filter(|r| !r.prerelease)

@@ -47,10 +47,6 @@ fn strip_v(v: &str) -> &str {
     v.strip_prefix('v').unwrap_or(v)
 }
 
-fn http_client() -> Result<reqwest::Client> {
-    crate::http::client(concat!("qusp-bun/", env!("CARGO_PKG_VERSION")))
-}
-
 #[derive(Deserialize, Debug)]
 struct GhRelease {
     tag_name: String,
@@ -93,7 +89,7 @@ impl Backend for BunBackend {
         _: &AnyvPaths,
         version: &str,
         _opts: &InstallOpts,
-        _http: &dyn crate::effects::HttpFetcher,
+        http: &dyn crate::effects::HttpFetcher,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -107,7 +103,6 @@ impl Backend for BunBackend {
         }
         let triple =
             target_triple().ok_or_else(|| anyhow!("oven-sh/bun has no asset for this platform"))?;
-        let client = http_client()?;
         let v_strip = strip_v(version);
         // Bun tags are `bun-vX.Y.Z`.
         let tag = format!("bun-v{v_strip}");
@@ -115,36 +110,17 @@ impl Backend for BunBackend {
         let asset_url = format!("https://github.com/{REPO}/releases/download/{tag}/{asset}");
         let sums_url = format!("https://github.com/{REPO}/releases/download/{tag}/SHASUMS256.txt");
 
-        let sums_text = client
-            .get(&sums_url)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("fetch {sums_url}"))?
-            .text()
-            .await?;
-        let expected = sums_text
-            .lines()
-            .find_map(|l| {
-                let mut parts = l.split_whitespace();
-                let hash = parts.next()?;
-                let filename = parts.next()?;
-                if filename == asset {
-                    Some(hash.to_string())
-                } else {
-                    None
-                }
-            })
+        let sums_text = http
+            .get_text(&sums_url)
+            .await
+            .with_context(|| format!("fetch {sums_url}"))?;
+        let expected = crate::backends::node::parse_shasums_line(&sums_text, &asset)
             .ok_or_else(|| anyhow!("no entry for {asset} in SHASUMS256.txt"))?;
 
-        let bytes = client
-            .get(&asset_url)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("download {asset_url}"))?
-            .bytes()
-            .await?;
+        let bytes = http
+            .get_bytes(&asset_url)
+            .await
+            .with_context(|| format!("download {asset_url}"))?;
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let actual = hex::encode(hasher.finalize());
@@ -263,19 +239,11 @@ impl Backend for BunBackend {
         Ok(out)
     }
 
-    async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("qusp-bun/", env!("CARGO_PKG_VERSION")))
-            .build()?;
+    async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
         let url = format!("https://api.github.com/repos/{REPO}/releases?per_page=30");
-        let releases: Vec<GhRelease> = crate::http::gh_auth(client.get(&url))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "qusp")
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let body = http.get_text_authenticated(&url).await?;
+        let releases: Vec<GhRelease> =
+            serde_json::from_str(&body).context("parse oven-sh/bun release index")?;
         let mut out: Vec<String> = releases
             .into_iter()
             .map(|r| strip_v(&r.tag_name).to_string())

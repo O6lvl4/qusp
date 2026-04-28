@@ -60,10 +60,6 @@ fn tools_root(p: &AnyvPaths) -> PathBuf {
     p.data.join("java-tools")
 }
 
-fn http_client() -> Result<reqwest::Client> {
-    crate::http::client(concat!("qusp-java/", env!("CARGO_PKG_VERSION")))
-}
-
 fn foojay_os() -> Option<&'static str> {
     Some(match std::env::consts::OS {
         "macos" => "macos",
@@ -163,7 +159,7 @@ impl Backend for JavaBackend {
         _qusp_paths: &AnyvPaths,
         version: &str,
         opts: &InstallOpts,
-        _http: &dyn crate::effects::HttpFetcher,
+        http: &dyn crate::effects::HttpFetcher,
     ) -> Result<InstallReport> {
         let paths = paths()?;
         paths.ensure_dirs()?;
@@ -184,7 +180,6 @@ impl Backend for JavaBackend {
         let arch = foojay_arch()
             .ok_or_else(|| anyhow!("Foojay has no JDK packaging for this architecture"))?;
         let archive_type = foojay_archive_type();
-        let client = http_client()?;
 
         // Step 1 — search packages.
         let search_url = format!(
@@ -195,15 +190,12 @@ impl Backend for JavaBackend {
              &directly_downloadable=true&latest=available\
              &javafx_bundled=false"
         );
-        let pkgs: PackagesResp = client
-            .get(&search_url)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("Foojay search failed: {search_url}"))?
-            .json()
+        let body = http
+            .get_text(&search_url)
             .await
-            .context("parse Foojay packages response")?;
+            .with_context(|| format!("Foojay search failed: {search_url}"))?;
+        let pkgs: PackagesResp =
+            serde_json::from_str(&body).context("parse Foojay packages response")?;
 
         let pkg = pkgs
             .result
@@ -216,15 +208,12 @@ impl Backend for JavaBackend {
 
         // Step 2 — fetch package details (download URL + checksum).
         let detail_url = format!("{FOOJAY_BASE}/ids/{}", pkg.id);
-        let detail: PackageDetailResp = client
-            .get(&detail_url)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("Foojay detail fetch failed: {detail_url}"))?
-            .json()
+        let detail_body = http
+            .get_text(&detail_url)
             .await
-            .context("parse Foojay detail response")?;
+            .with_context(|| format!("Foojay detail fetch failed: {detail_url}"))?;
+        let detail: PackageDetailResp =
+            serde_json::from_str(&detail_body).context("parse Foojay detail response")?;
         let d = detail
             .result
             .into_iter()
@@ -236,13 +225,7 @@ impl Backend for JavaBackend {
         let expected = if d.checksum_type.eq_ignore_ascii_case("sha256") && !d.checksum.is_empty() {
             d.checksum.clone()
         } else if !d.checksum_uri.is_empty() {
-            let text = client
-                .get(&d.checksum_uri)
-                .send()
-                .await?
-                .error_for_status()?
-                .text()
-                .await?;
+            let text = http.get_text(&d.checksum_uri).await?;
             // Files are typically `<sha>  <filename>` or `<sha>` alone.
             text.split_whitespace()
                 .next()
@@ -257,14 +240,10 @@ impl Backend for JavaBackend {
         };
 
         // Step 3 — download.
-        let bytes = client
-            .get(&d.direct_download_uri)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("download {}", d.direct_download_uri))?
-            .bytes()
-            .await?;
+        let bytes = http
+            .get_bytes(&d.direct_download_uri)
+            .await
+            .with_context(|| format!("download {}", d.direct_download_uri))?;
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let actual = hex::encode(hasher.finalize());
@@ -368,8 +347,7 @@ impl Backend for JavaBackend {
         Ok(out)
     }
 
-    async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
-        let client = http_client()?;
+    async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
         // Surface major + LTS versions known to Foojay so users see what's
         // actually available without paginating thousands of point releases.
         let url = format!("{FOOJAY_BASE}/major_versions?ga=true");
@@ -384,13 +362,8 @@ impl Backend for JavaBackend {
             term_of_support: String,
             versions: Vec<String>,
         }
-        let r: R = client
-            .get(&url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
+        let body = http.get_text(&url).await?;
+        let r: R = serde_json::from_str(&body).context("parse Foojay major_versions")?;
         let mut out = Vec::new();
         for mv in r.result {
             let lts = mv.term_of_support.eq_ignore_ascii_case("lts");
@@ -407,13 +380,10 @@ impl Backend for JavaBackend {
 
     async fn resolve_tool(
         &self,
-        _http: &dyn crate::effects::HttpFetcher,
+        http: &dyn crate::effects::HttpFetcher,
         name: &str,
         spec: &ToolSpec,
     ) -> Result<ResolvedTool> {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("qusp-java/", env!("CARGO_PKG_VERSION")))
-            .build()?;
         let pkg = spec
             .package_override()
             .map(String::from)
@@ -425,8 +395,8 @@ impl Backend for JavaBackend {
                 )
             })?;
         match pkg.as_str() {
-            "maven" => resolve_maven(&client, name, spec.version()).await,
-            "gradle" => resolve_gradle(&client, name, spec.version()).await,
+            "maven" => resolve_maven(http, name, spec.version()).await,
+            "gradle" => resolve_gradle(http, name, spec.version()).await,
             other => bail!("internal: unknown java tool package '{other}'"),
         }
     }
@@ -434,20 +404,15 @@ impl Backend for JavaBackend {
     async fn install_tool(
         &self,
         _qusp_paths: &AnyvPaths,
-        _http: &dyn crate::effects::HttpFetcher,
+        http: &dyn crate::effects::HttpFetcher,
         toolchain_version: &str,
         resolved: &ResolvedTool,
     ) -> Result<LockedTool> {
         let paths = paths()?;
-        let client = http_client()?;
-        let bytes = client
-            .get(&resolved.bin)
-            .send()
-            .await?
-            .error_for_status()
-            .with_context(|| format!("download {}", resolved.bin))?
-            .bytes()
-            .await?;
+        let bytes = http
+            .get_bytes(&resolved.bin)
+            .await
+            .with_context(|| format!("download {}", resolved.bin))?;
         // Maven publishes sha512, Gradle publishes sha256. Disambiguate
         // by hex-length (128 vs 64). Anything else is an error.
         let actual = match resolved.upstream_hash.len() {
@@ -619,12 +584,12 @@ fn filename_from_url(url: &str) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 async fn resolve_maven(
-    client: &reqwest::Client,
+    http: &dyn crate::effects::HttpFetcher,
     tool_name: &str,
     version: &str,
 ) -> Result<ResolvedTool> {
     let v = if version == "latest" {
-        latest_maven_version(client).await?
+        latest_maven_version(http).await?
     } else {
         version.to_string()
     };
@@ -636,14 +601,10 @@ async fn resolve_maven(
     let asset = format!("apache-maven-{v}-bin.tar.gz");
     let asset_url = format!("https://archive.apache.org/dist/maven/{line}/{v}/binaries/{asset}");
     let sha_url = format!("{asset_url}.sha512");
-    let sha_text = client
-        .get(&sha_url)
-        .send()
-        .await?
-        .error_for_status()
-        .with_context(|| format!("fetch {sha_url}"))?
-        .text()
-        .await?;
+    let sha_text = http
+        .get_text(&sha_url)
+        .await
+        .with_context(|| format!("fetch {sha_url}"))?;
     let sha = sha_text
         .split_whitespace()
         .next()
@@ -660,26 +621,22 @@ async fn resolve_maven(
 }
 
 async fn resolve_gradle(
-    client: &reqwest::Client,
+    http: &dyn crate::effects::HttpFetcher,
     tool_name: &str,
     version: &str,
 ) -> Result<ResolvedTool> {
     let v = if version == "latest" {
-        latest_gradle_version(client).await?
+        latest_gradle_version(http).await?
     } else {
         version.to_string()
     };
     let asset = format!("gradle-{v}-bin.zip");
     let asset_url = format!("https://services.gradle.org/distributions/{asset}");
     let sha_url = format!("{asset_url}.sha256");
-    let sha_text = client
-        .get(&sha_url)
-        .send()
-        .await?
-        .error_for_status()
-        .with_context(|| format!("fetch {sha_url}"))?
-        .text()
-        .await?;
+    let sha_text = http
+        .get_text(&sha_url)
+        .await
+        .with_context(|| format!("fetch {sha_url}"))?;
     let sha = sha_text
         .split_whitespace()
         .next()
@@ -694,15 +651,11 @@ async fn resolve_gradle(
     })
 }
 
-async fn latest_maven_version(client: &reqwest::Client) -> Result<String> {
+async fn latest_maven_version(http: &dyn crate::effects::HttpFetcher) -> Result<String> {
     // Apache's `maven-metadata.xml` has the canonical "latest" / "release"
     // tags; cheaper to scrape the directory listing.
-    let html = client
-        .get("https://archive.apache.org/dist/maven/maven-3/")
-        .send()
-        .await?
-        .error_for_status()?
-        .text()
+    let html = http
+        .get_text("https://archive.apache.org/dist/maven/maven-3/")
         .await?;
     let mut versions: Vec<String> = html
         .split('"')
@@ -723,18 +676,15 @@ async fn latest_maven_version(client: &reqwest::Client) -> Result<String> {
         .ok_or_else(|| anyhow!("could not parse latest Maven version from Apache index"))
 }
 
-async fn latest_gradle_version(client: &reqwest::Client) -> Result<String> {
+async fn latest_gradle_version(http: &dyn crate::effects::HttpFetcher) -> Result<String> {
     #[derive(Deserialize)]
     struct R {
         version: String,
     }
-    let r: R = client
-        .get("https://services.gradle.org/versions/current")
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
+    let body = http
+        .get_text("https://services.gradle.org/versions/current")
         .await?;
+    let r: R = serde_json::from_str(&body).context("parse gradle versions/current")?;
     Ok(r.version)
 }
 
