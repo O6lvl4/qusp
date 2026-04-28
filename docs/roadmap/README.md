@@ -36,7 +36,7 @@
 
 | 項目 | 入手経路 | コメント |
 |---|---|---|
-| [Dart / Flutter](on-hold/dart-and-flutter.md) | storage.googleapis.com | Flutter SDK ~700MB |
+| [Flutter](on-hold/flutter.md) | storage.googleapis.com | SDK ~700MB、Dart は v0.19.0 で先行出荷済 |
 
 ### Source-build 系 (spawn_blocking 例外、難易度: 中-高)
 
@@ -90,6 +90,7 @@
 | [Julia backend](done/julia.md) | v0.16.0 | Phase 4 |
 | [Crystal backend](done/crystal.md) | v0.17.0 | Phase 4 |
 | [Groovy backend](done/groovy.md) | v0.18.0 | Phase 4 |
+| [Dart backend](done/dart.md) | v0.19.0 | Phase 4 |
 | [e2e test scenarios](done/e2e-tests.md) | scripts/e2e/* | Phase 1 |
 | [Benchmark vs mise](done/benchmark-vs-mise.md) — shim mode 4× 速い実数 | scripts/bench.sh | Phase 1 |
 
