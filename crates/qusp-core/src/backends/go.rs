@@ -1,33 +1,17 @@
-//! Go backend, v0.0.1 — wraps `gv` as a subprocess. v0.1.0 will pull
-//! `gv-core` in directly so we don't depend on a separate `gv` install.
+//! Go backend — uses [`gv-core`](https://github.com/O6lvl4/gv) as a Cargo
+//! dependency. Toolchain installs go directly to gv's content-addressed
+//! store, so `qusp install go 1.26.2` and `gv install 1.26.2` produce
+//! identical on-disk state.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use anyhow::{anyhow, bail, Context, Result};
-use anyv_core::Paths;
+use anyhow::{Context, Result};
+use anyv_core::Paths as AnyvPaths;
 use async_trait::async_trait;
 
 use crate::backend::*;
 
 pub struct GoBackend;
-
-const GV_BIN: &str = "gv";
-
-fn gv_available() -> bool {
-    which("gv").is_ok()
-}
-
-fn which(name: &str) -> Result<PathBuf> {
-    let path = std::env::var_os("PATH").unwrap_or_default();
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-    Err(anyhow!("`{name}` not found on PATH"))
-}
 
 #[async_trait]
 impl Backend for GoBackend {
@@ -39,141 +23,146 @@ impl Backend for GoBackend {
     }
 
     async fn detect_version(&self, cwd: &Path) -> Result<Option<DetectedVersion>> {
-        // Reuse `gv current` — handles go.mod toolchain + .go-version.
-        if !gv_available() {
-            return Ok(None);
+        let paths = gv_core::paths::discover()?;
+        match gv_core::resolve::resolve(&paths, cwd)? {
+            Some(r) => Ok(Some(DetectedVersion {
+                version: r.version,
+                source: format!("{:?}", r.source).to_lowercase(),
+                origin: r.origin.unwrap_or_else(|| cwd.to_path_buf()),
+            })),
+            None => Ok(None),
         }
-        let out = Command::new(GV_BIN)
-            .arg("current")
-            .current_dir(cwd)
-            .output();
-        let Ok(out) = out else {
-            return Ok(None);
-        };
-        if !out.status.success() {
-            return Ok(None);
-        }
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let mut lines = stdout.lines();
-        let Some(version) = lines.next() else {
-            return Ok(None);
-        };
-        let version = version.trim();
-        if version.is_empty() {
-            return Ok(None);
-        }
-        let source = lines
-            .next()
-            .map(|l| l.trim().trim_start_matches("source: ").to_string())
-            .unwrap_or_else(|| "gv".into());
-        Ok(Some(DetectedVersion {
-            version: version.to_string(),
-            source,
-            origin: cwd.to_path_buf(),
-        }))
     }
 
-    async fn install(&self, _paths: &Paths, version: &str) -> Result<InstallReport> {
-        ensure_gv()?;
-        let status = Command::new(GV_BIN)
-            .args(["install", version])
-            .status()
-            .with_context(|| format!("spawn {GV_BIN} install {version}"))?;
-        if !status.success() {
-            bail!("gv install {version} failed (exit {:?})", status.code());
-        }
-        // Ask gv where it put the install.
-        let out = Command::new(GV_BIN)
-            .args(["dir", "versions"])
-            .output()
-            .context("spawn gv dir versions")?;
-        let install_dir = if out.status.success() {
-            let base = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            // gv uses "go1.26.2" naming; normalize.
-            let v = if version.starts_with("go") {
-                version.to_string()
-            } else {
-                format!("go{version}")
-            };
-            PathBuf::from(base).join(v)
-        } else {
-            PathBuf::new()
+    async fn install(&self, _qusp_paths: &AnyvPaths, version: &str) -> Result<InstallReport> {
+        let paths = gv_core::paths::discover()?;
+        paths.ensure_dirs()?;
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("qusp-go/", env!("CARGO_PKG_VERSION")))
+            .build()?;
+        let platform = gv_core::Platform::detect()?;
+        let normalized = gv_core::release::normalize_version(version);
+        let installer = gv_core::install::Installer {
+            paths: &paths,
+            client: &client,
+            platform,
         };
+        let report = installer.install(&normalized).await?;
         Ok(InstallReport {
-            version: version.to_string(),
-            install_dir,
-            already_present: false,
+            version: report.version,
+            install_dir: report.install_dir,
+            already_present: report.already_present,
         })
     }
 
-    fn uninstall(&self, _paths: &Paths, version: &str) -> Result<()> {
-        ensure_gv()?;
-        let status = Command::new(GV_BIN).args(["uninstall", version]).status()?;
-        if !status.success() {
-            bail!("gv uninstall {version} failed");
+    fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
+        let paths = gv_core::paths::discover()?;
+        let canonical = gv_core::release::normalize_version(version);
+        let link = paths.version_dir(&canonical);
+        if !link.exists() && !link.is_symlink() {
+            anyhow::bail!("{canonical} is not installed");
         }
+        std::fs::remove_file(&link)
+            .or_else(|_| std::fs::remove_dir_all(&link))
+            .with_context(|| format!("remove {}", link.display()))?;
         Ok(())
     }
 
-    fn list_installed(&self, _paths: &Paths) -> Result<Vec<String>> {
-        if !gv_available() {
-            return Ok(vec![]);
-        }
-        let out = Command::new(GV_BIN).arg("list").output()?;
-        if !out.status.success() {
-            return Ok(vec![]);
-        }
-        Ok(String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| l.starts_with("go"))
-            .collect())
+    fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
+        let paths = gv_core::paths::discover()?;
+        gv_core::resolve::list_installed(&paths)
     }
 
-    async fn list_remote(&self, _client: &reqwest::Client) -> Result<Vec<String>> {
-        ensure_gv()?;
-        let out = Command::new(GV_BIN).args(["list", "--remote"]).output()?;
-        Ok(String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter_map(|l| l.split_whitespace().nth(1).map(|s| s.to_string()))
-            .collect())
+    async fn list_remote(&self, client: &reqwest::Client) -> Result<Vec<String>> {
+        let releases = gv_core::release::fetch_index(client).await?;
+        Ok(releases.iter().map(|r| r.version.clone()).collect())
     }
 
     async fn resolve_tool(
         &self,
-        _client: &reqwest::Client,
-        _name: &str,
-        _spec: &ToolSpec,
+        client: &reqwest::Client,
+        name: &str,
+        spec: &ToolSpec,
     ) -> Result<ResolvedTool> {
-        bail!("qusp v0.0.1 does not yet route Go tool installs through `gv`. Coming in v0.1.0.")
+        let gv_spec = match spec {
+            ToolSpec::Short(v) => gv_core::project::ToolSpec::Short(v.clone()),
+            ToolSpec::Long {
+                package,
+                version,
+                bin,
+            } => gv_core::project::ToolSpec::Long {
+                package: package.clone(),
+                version: version.clone(),
+                bin: bin.clone(),
+            },
+        };
+        let r = gv_core::tool::resolve(client, name, &gv_spec).await?;
+        Ok(ResolvedTool {
+            name: r.name,
+            package: r.package,
+            version: r.version,
+            bin: r.bin,
+            upstream_hash: r.module_hash,
+        })
     }
 
     async fn install_tool(
         &self,
-        _paths: &Paths,
-        _toolchain_version: &str,
-        _resolved: &ResolvedTool,
+        _qusp_paths: &AnyvPaths,
+        toolchain_version: &str,
+        resolved: &ResolvedTool,
     ) -> Result<LockedTool> {
-        bail!("qusp v0.0.1 does not yet route Go tool installs through `gv`. Coming in v0.1.0.")
+        let paths = gv_core::paths::discover()?;
+        let gv_resolved = gv_core::tool::ResolvedTool {
+            name: resolved.name.clone(),
+            package: resolved.package.clone(),
+            version: resolved.version.clone(),
+            bin: resolved.bin.clone(),
+            module_hash: resolved.upstream_hash.clone(),
+        };
+        let r = tokio::task::spawn_blocking({
+            let paths = paths.clone();
+            let v = toolchain_version.to_string();
+            move || gv_core::tool::install(&paths, &v, &gv_resolved)
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("install task panicked: {e}"))??;
+        Ok(LockedTool {
+            name: r.name,
+            package: r.package,
+            version: r.version,
+            bin: r.bin,
+            upstream_hash: r.module_hash,
+            built_with: r.built_with,
+        })
     }
 
-    fn tool_bin_path(&self, _paths: &Paths, locked: &LockedTool) -> PathBuf {
-        // Placeholder until v0.1.0; gv's own `which` would be the right thing.
-        PathBuf::from(&locked.bin)
+    fn tool_bin_path(&self, _qusp_paths: &AnyvPaths, locked: &LockedTool) -> PathBuf {
+        let paths = match gv_core::paths::discover() {
+            Ok(p) => p,
+            Err(_) => return PathBuf::from(&locked.bin),
+        };
+        let gv_locked = gv_core::lock::LockedTool {
+            name: locked.name.clone(),
+            package: locked.package.clone(),
+            version: locked.version.clone(),
+            bin: locked.bin.clone(),
+            module_hash: locked.upstream_hash.clone(),
+            built_with: locked.built_with.clone(),
+            binary_sha256: String::new(),
+        };
+        gv_core::tool::tool_bin_path(&paths, &gv_locked)
     }
 
-    fn build_run_env(&self, _paths: &Paths, _version: &str, _cwd: &Path) -> Result<RunEnv> {
-        // gv shim handles env on its own; nothing to inject here for now.
-        Ok(RunEnv::default())
+    fn build_run_env(&self, _qusp_paths: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
+        let paths = gv_core::paths::discover()?;
+        let goroot = paths.version_dir(version);
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("GOROOT".into(), goroot.to_string_lossy().into_owned());
+        env.insert("GOTOOLCHAIN".into(), "local".into());
+        Ok(RunEnv {
+            path_prepend: vec![goroot.join("bin")],
+            env,
+        })
     }
-}
-
-fn ensure_gv() -> Result<()> {
-    if gv_available() {
-        return Ok(());
-    }
-    Err(anyhow!(
-        "qusp's go backend currently delegates to `gv` (https://github.com/O6lvl4/gv). \
-         Install it with `brew install O6lvl4/tap/gv` or `cargo install --git https://github.com/O6lvl4/gv gv-cli`."
-    ))
 }

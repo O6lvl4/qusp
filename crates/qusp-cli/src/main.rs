@@ -8,14 +8,13 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, Result};
 use anyv_core::presentation::{
-    bold as color_bold, cyan as color_cyan, dim, green as color_green, set_quiet, spinner,
-    success_mark, yellow as color_yellow,
+    bold as color_bold, cyan as color_cyan, dim, set_quiet, spinner, success_mark,
+    yellow as color_yellow,
 };
 use anyv_core::say;
 use clap::{Parser, Subcommand};
-use qusp_core::backend::Backend;
 use qusp_core::backends;
 use qusp_core::registry::BackendRegistry;
 use qusp_core::{lock, manifest, paths};
@@ -110,6 +109,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
 fn build_registry() -> BackendRegistry {
     let mut r = BackendRegistry::new();
     r.register(Arc::new(backends::go::GoBackend));
+    r.register(Arc::new(backends::ruby::RubyBackend));
     r.register(Arc::new(backends::python::PythonBackend));
     r
 }

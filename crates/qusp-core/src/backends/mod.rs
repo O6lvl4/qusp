@@ -1,6 +1,7 @@
-//! Built-in backends. v0.0.1 ships Go (via `gv`) and Python (via `uv`)
-//! as subprocess wrappers — proves the multi-language manifest end-to-end
-//! while we incubate the deeper native backends in later releases.
+//! Built-in backends. Each is a native Rust implementation owning its
+//! download / verify / install logic. No subprocess wrappers around
+//! competing version managers.
 
 pub mod go;
 pub mod python;
+pub mod ruby;
