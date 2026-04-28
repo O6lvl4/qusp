@@ -1,4 +1,4 @@
-//! qusp CLI — v0.23.0.
+//! qusp CLI — v0.24.0.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
@@ -25,6 +25,8 @@ use clap::{Parser, Subcommand};
 use qusp_core::backends;
 use qusp_core::registry::BackendRegistry;
 use qusp_core::{lock, manifest, paths};
+
+mod script;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -553,12 +555,21 @@ async fn cmd_x(
     argv: Vec<String>,
 ) -> Result<ExitCode> {
     if argv.is_empty() {
-        bail!("usage: qusp x <tool> [args...]   (or invoke as `quspx`)");
+        bail!("usage: qusp x <tool|script> [args...]   (or invoke as `quspx`)");
     }
     let cmd = &argv[0];
     let rest = &argv[1..];
 
-    // Route the tool name to a backend.
+    // Hospitality path: if argv[0] is an existing file with a known
+    // script extension, run it through the language's canonical
+    // single-file runner — installing the toolchain on demand. This
+    // is qusp's "uv run hello.py" equivalent, generalized across
+    // every backend qusp owns.
+    if let Some((script_path, lang)) = script::detect_script_invocation(cmd) {
+        return script::run_script(r, paths, &script_path, lang, rest).await;
+    }
+
+    // Fall through: argv[0] is a tool name. Route to its backend.
     let orch = qusp_core::orchestrator::Orchestrator::new(r, paths);
     let (lang, backend) = orch.route_tool(cmd)?;
 
