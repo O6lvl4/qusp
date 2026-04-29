@@ -175,6 +175,11 @@ impl Backend for KotlinBackend {
             }
         }
 
+        // Upstream kotlinc has an unquoted $(dirname ...) that breaks
+        // when the install path contains spaces (e.g. "Application Support").
+        // Patch it so the farm symlink works from any location.
+        patch_kotlinc_spaces(&kotlinc)?;
+
         if let Some(parent) = install_dir.parent() {
             anyv_core::paths::ensure_dir(parent)?;
         }
@@ -283,6 +288,25 @@ impl Backend for KotlinBackend {
             FarmBinary::unversioned("kapt"),
         ]
     }
+}
+
+/// Patch upstream kotlinc's `findKotlinHome` to quote `$(dirname ...)`,
+/// fixing `cd: too many arguments` on paths with spaces.
+fn patch_kotlinc_spaces(kotlinc_dir: &Path) -> Result<()> {
+    let script = kotlinc_dir.join("bin").join("kotlinc");
+    if !script.is_file() {
+        return Ok(());
+    }
+    let content = std::fs::read_to_string(&script)?;
+    let bad = r#"cd -P $(dirname "$source") && cd -P $(dirname "$linked")"#;
+    if content.contains(bad) {
+        let fixed = content.replace(
+            bad,
+            r#"cd -P "$(dirname "$source")" && cd -P "$(dirname "$linked")"#,
+        );
+        std::fs::write(&script, fixed)?;
+    }
+    Ok(())
 }
 
 fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
