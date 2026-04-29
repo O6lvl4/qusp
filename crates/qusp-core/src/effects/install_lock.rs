@@ -151,9 +151,8 @@ pub fn atomic_symlink_swap(target: &Path, link_path: &Path) -> Result<()> {
             let _ = std::fs::remove_file(link_path);
             let _ = std::fs::remove_dir_all(link_path);
         }
-        std::os::windows::fs::symlink_dir(target, link_path).with_context(|| {
-            format!("symlink {} → {}", link_path.display(), target.display())
-        })?;
+        std::os::windows::fs::symlink_dir(target, link_path)
+            .with_context(|| format!("symlink {} → {}", link_path.display(), target.display()))?;
     }
     Ok(())
 }

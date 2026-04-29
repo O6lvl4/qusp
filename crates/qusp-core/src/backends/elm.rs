@@ -102,14 +102,12 @@ impl Backend for ElmBackend {
             });
         }
 
-        let _install_guard = crate::effects::StoreLock::acquire(
-            &crate::effects::lock_path_for(&install_dir),
-        )?;
-        let asset = asset_name()
-            .ok_or_else(|| anyhow!("elm/compiler has no binary for this platform"))?;
+        let _install_guard =
+            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        let asset =
+            asset_name().ok_or_else(|| anyhow!("elm/compiler has no binary for this platform"))?;
         let v_strip = strip_v(version);
-        let asset_url =
-            format!("https://github.com/{REPO}/releases/download/{v_strip}/{asset}");
+        let asset_url = format!("https://github.com/{REPO}/releases/download/{v_strip}/{asset}");
 
         let mut task = progress.start(&format!("downloading elm {v_strip}"), None);
         let gz_bytes = http
@@ -157,10 +155,13 @@ impl Backend for ElmBackend {
         if let Some(parent) = install_dir.parent() {
             anyv_core::paths::ensure_dir(parent)?;
         }
-        crate::effects::atomic_symlink_swap(&store_dir, &install_dir)
-            .with_context(|| {
-                format!("symlink {} → {}", install_dir.display(), store_dir.display())
-            })?;
+        crate::effects::atomic_symlink_swap(&store_dir, &install_dir).with_context(|| {
+            format!(
+                "symlink {} → {}",
+                install_dir.display(),
+                store_dir.display()
+            )
+        })?;
 
         Ok(InstallReport {
             version: v_strip.to_string(),

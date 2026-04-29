@@ -119,9 +119,8 @@ impl Backend for ScalaBackend {
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard = crate::effects::StoreLock::acquire(
-            &crate::effects::lock_path_for(&install_dir),
-        )?;
+        let _install_guard =
+            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
         let triple = host_triple().ok_or_else(|| {
             anyhow!(
                 "Scala 3 is not published for {}-{} by upstream",
@@ -192,10 +191,13 @@ impl Backend for ScalaBackend {
         if let Some(parent) = install_dir.parent() {
             anyv_core::paths::ensure_dir(parent)?;
         }
-        crate::effects::atomic_symlink_swap(&scala_top, &install_dir)
-            .with_context(|| {
-                format!("symlink {} → {}", install_dir.display(), scala_top.display())
-            })?;
+        crate::effects::atomic_symlink_swap(&scala_top, &install_dir).with_context(|| {
+            format!(
+                "symlink {} → {}",
+                install_dir.display(),
+                scala_top.display()
+            )
+        })?;
 
         Ok(InstallReport {
             version: version.to_string(),
@@ -294,8 +296,14 @@ fn parse_sha256_sidecar(s: &str) -> Option<String> {
 fn supports_sidecar(tag: &str) -> bool {
     let v = tag.trim_start_matches('v');
     let parts: Vec<&str> = v.split('.').collect();
-    let major = parts.first().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-    let minor = parts.get(1).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+    let major = parts
+        .first()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+    let minor = parts
+        .get(1)
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
     (major, minor) >= (3, 7)
 }
 

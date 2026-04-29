@@ -116,9 +116,8 @@ impl Backend for RustBackend {
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard = crate::effects::StoreLock::acquire(
-            &crate::effects::lock_path_for(&install_dir),
-        )?;
+        let _install_guard =
+            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
         let triple = target_triple()
             .ok_or_else(|| anyhow!("static.rust-lang.org has no asset for this platform"))?;
         // Resolve channel names (stable/beta/nightly) to a concrete version
@@ -174,10 +173,13 @@ impl Backend for RustBackend {
         if let Some(parent) = install_dir.parent() {
             anyv_core::paths::ensure_dir(parent)?;
         }
-        crate::effects::atomic_symlink_swap(&merged_root, &install_dir)
-            .with_context(|| {
-                format!("symlink {} → {}", install_dir.display(), merged_root.display())
-            })?;
+        crate::effects::atomic_symlink_swap(&merged_root, &install_dir).with_context(|| {
+            format!(
+                "symlink {} → {}",
+                install_dir.display(),
+                merged_root.display()
+            )
+        })?;
 
         Ok(InstallReport {
             version: resolved_version,

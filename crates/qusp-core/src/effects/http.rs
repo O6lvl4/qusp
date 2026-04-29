@@ -32,11 +32,7 @@ pub trait HttpFetcher: Send + Sync {
     /// end (correct, but provides no real-time feedback). `LiveHttp`
     /// overrides for actual chunk-level reporting using
     /// `Content-Length` to set the bar total before the first byte.
-    async fn get_bytes_streaming(
-        &self,
-        url: &str,
-        task: &mut dyn ProgressTask,
-    ) -> Result<Bytes> {
+    async fn get_bytes_streaming(&self, url: &str, task: &mut dyn ProgressTask) -> Result<Bytes> {
         let bytes = self.get_bytes(url).await?;
         task.set_total(bytes.len() as u64);
         task.advance(bytes.len() as u64);
@@ -112,11 +108,7 @@ impl HttpFetcher for LiveHttp {
             .await?)
     }
 
-    async fn get_bytes_streaming(
-        &self,
-        url: &str,
-        task: &mut dyn ProgressTask,
-    ) -> Result<Bytes> {
+    async fn get_bytes_streaming(&self, url: &str, task: &mut dyn ProgressTask) -> Result<Bytes> {
         let resp = self
             .client
             .get(url)

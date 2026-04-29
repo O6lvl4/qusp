@@ -116,9 +116,8 @@ impl Backend for DartBackend {
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard = crate::effects::StoreLock::acquire(
-            &crate::effects::lock_path_for(&install_dir),
-        )?;
+        let _install_guard =
+            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
         let triple = host_triple().ok_or_else(|| {
             anyhow!(
                 "Dart SDK is not published for {}-{} by upstream",
@@ -188,10 +187,9 @@ impl Backend for DartBackend {
         if let Some(parent) = install_dir.parent() {
             anyv_core::paths::ensure_dir(parent)?;
         }
-        crate::effects::atomic_symlink_swap(&dart_top, &install_dir)
-            .with_context(|| {
-                format!("symlink {} → {}", install_dir.display(), dart_top.display())
-            })?;
+        crate::effects::atomic_symlink_swap(&dart_top, &install_dir).with_context(|| {
+            format!("symlink {} → {}", install_dir.display(), dart_top.display())
+        })?;
 
         Ok(InstallReport {
             version: version.to_string(),
@@ -272,9 +270,7 @@ impl Backend for DartBackend {
 
     fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
         use crate::effects::FarmBinary;
-        vec![
-            FarmBinary::unversioned("dart"),
-        ]
+        vec![FarmBinary::unversioned("dart")]
     }
 }
 

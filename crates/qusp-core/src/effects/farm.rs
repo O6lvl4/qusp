@@ -173,13 +173,8 @@ impl FarmManager {
                 ));
                 continue;
             }
-            super::install_lock::atomic_symlink_swap(&source, &link).with_context(|| {
-                format!(
-                    "farm: link {} → {}",
-                    link.display(),
-                    source.display()
-                )
-            })?;
+            super::install_lock::atomic_symlink_swap(&source, &link)
+                .with_context(|| format!("farm: link {} → {}", link.display(), source.display()))?;
             report.linked.push(bin.link_name.clone());
         }
         Ok(report)
@@ -277,8 +272,7 @@ impl GlobalPins {
         if !p.is_file() {
             return Ok(Self::default());
         }
-        let raw =
-            std::fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))?;
+        let raw = std::fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))?;
         toml::from_str(&raw).with_context(|| format!("parse {}", p.display()))
     }
 
@@ -354,7 +348,10 @@ mod tests {
             .unwrap();
         assert_eq!(report.linked, vec!["python3.13".to_string()]);
         let link = farm_dir.join("python3.13");
-        assert_eq!(std::fs::read_link(&link).unwrap(), install.join("bin/python3.13"));
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            install.join("bin/python3.13")
+        );
 
         std::fs::remove_dir_all(&store).ok();
         std::fs::remove_dir_all(&farm_dir).ok();

@@ -228,12 +228,9 @@ impl Renderable for OutdatedOutput {
         let mut hits = 0usize;
         for e in &self.entries {
             match e.status {
-                OutdatedStatus::UpToDate => println!(
-                    " {} {} {}",
-                    green("="),
-                    cyan(&e.backend),
-                    bold(&e.current)
-                ),
+                OutdatedStatus::UpToDate => {
+                    println!(" {} {} {}", green("="), cyan(&e.backend), bold(&e.current))
+                }
                 OutdatedStatus::Outdated => {
                     hits += 1;
                     let latest_disp = e.latest.as_deref().unwrap_or("?");
@@ -284,7 +281,9 @@ mod tests {
     fn backends_json_round_trip() {
         let o = BackendsOutput {
             backends: vec![
-                BackendEntry { id: "python".into() },
+                BackendEntry {
+                    id: "python".into(),
+                },
                 BackendEntry { id: "ruby".into() },
             ],
         };
@@ -313,7 +312,9 @@ mod tests {
         let o = ListOutput {
             lang: "lua".into(),
             scope: ListScope::Installed,
-            versions: vec![VersionEntry { version: "5.4.7".into() }],
+            versions: vec![VersionEntry {
+                version: "5.4.7".into(),
+            }],
         };
         let json = serde_json::to_string(&o).unwrap();
         assert!(

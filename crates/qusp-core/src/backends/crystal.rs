@@ -108,9 +108,8 @@ impl Backend for CrystalBackend {
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard = crate::effects::StoreLock::acquire(
-            &crate::effects::lock_path_for(&install_dir),
-        )?;
+        let _install_guard =
+            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
         let slug = host_slug()
             .ok_or_else(|| anyhow!("crystal-lang/crystal has no asset for this platform"))?;
 
@@ -171,9 +170,7 @@ impl Backend for CrystalBackend {
             anyv_core::paths::ensure_dir(parent)?;
         }
         crate::effects::atomic_symlink_swap(&inner, &install_dir)
-            .with_context(|| {
-                format!("symlink {} → {}", install_dir.display(), inner.display())
-            })?;
+            .with_context(|| format!("symlink {} → {}", install_dir.display(), inner.display()))?;
 
         Ok(InstallReport {
             version: version.to_string(),

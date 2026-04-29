@@ -148,9 +148,8 @@ impl Backend for LuaBackend {
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard = crate::effects::StoreLock::acquire(
-            &crate::effects::lock_path_for(&install_dir),
-        )?;
+        let _install_guard =
+            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
         let plat = lua_makefile_plat().ok_or_else(|| {
             anyhow!(
                 "Lua source build requires a known Makefile platform; \
@@ -262,9 +261,7 @@ impl Backend for LuaBackend {
             anyv_core::paths::ensure_dir(parent)?;
         }
         crate::effects::atomic_symlink_swap(&prefix, &install_dir)
-            .with_context(|| {
-                format!("symlink {} → {}", install_dir.display(), prefix.display())
-            })?;
+            .with_context(|| format!("symlink {} → {}", install_dir.display(), prefix.display()))?;
 
         Ok(InstallReport {
             version: version.to_string(),
@@ -416,7 +413,8 @@ mod tests {
             let h = known_sha256(v).unwrap_or_else(|| panic!("missing {v}"));
             assert_eq!(h.len(), 64, "{v} hash length");
             assert!(
-                h.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
+                h.chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()),
                 "{v} hash should be lowercase hex"
             );
         }

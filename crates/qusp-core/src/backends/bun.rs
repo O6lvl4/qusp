@@ -105,9 +105,8 @@ impl Backend for BunBackend {
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard = crate::effects::StoreLock::acquire(
-            &crate::effects::lock_path_for(&install_dir),
-        )?;
+        let _install_guard =
+            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
         let triple =
             target_triple().ok_or_else(|| anyhow!("oven-sh/bun has no asset for this platform"))?;
         let v_strip = strip_v(version);
@@ -193,10 +192,13 @@ impl Backend for BunBackend {
         if let Some(parent) = install_dir.parent() {
             anyv_core::paths::ensure_dir(parent)?;
         }
-        crate::effects::atomic_symlink_swap(&store_dir, &install_dir)
-            .with_context(|| {
-                format!("symlink {} → {}", install_dir.display(), store_dir.display())
-            })?;
+        crate::effects::atomic_symlink_swap(&store_dir, &install_dir).with_context(|| {
+            format!(
+                "symlink {} → {}",
+                install_dir.display(),
+                store_dir.display()
+            )
+        })?;
 
         Ok(InstallReport {
             version: v_strip.to_string(),

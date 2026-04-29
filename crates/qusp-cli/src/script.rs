@@ -47,11 +47,11 @@ pub fn extension_to_lang(path: &Path) -> Option<&'static str> {
         "groovy" => "groovy",
 
         // Source files that ship with a runnable single-file launcher.
-        "java" => "java",     // `java Hello.java` (JEP 330, JDK 21+)
-        "kts" => "kotlin",    // `kotlin -script Hello.kts`
-        "scala" | "sc" => "scala",      // `scala Hello.scala` (3.5+ ships scala-cli)
-        "clj" | "cljc" => "clojure",    // `clojure Hello.clj`
-        "hs" => "haskell",    // `runghc Hello.hs`
+        "java" => "java",            // `java Hello.java` (JEP 330, JDK 21+)
+        "kts" => "kotlin",           // `kotlin -script Hello.kts`
+        "scala" | "sc" => "scala",   // `scala Hello.scala` (3.5+ ships scala-cli)
+        "clj" | "cljc" => "clojure", // `clojure Hello.clj`
+        "hs" => "haskell",           // `runghc Hello.hs`
 
         // JS/TS — choose the simplest defaults; .ts → deno (built-in
         // TypeScript), .js → node (broadest ecosystem). Bun overlaps
@@ -230,8 +230,8 @@ fn comment_prefixes(lang: &str) -> &'static [&'static str] {
         // Double-dash.
         "lua" | "haskell" => &["--"],
         // C-style.
-        "node" | "deno" | "go" | "scala" | "java" | "kotlin" | "zig"
-        | "dart" | "crystal" | "groovy" => &["//"],
+        "node" | "deno" | "go" | "scala" | "java" | "kotlin" | "zig" | "dart" | "crystal"
+        | "groovy" => &["//"],
         // Lisp-style. Try `;;` first (idiomatic) then bare `;` (single-line).
         "clojure" => &[";;", ";"],
         _ => &[],
@@ -379,11 +379,11 @@ mod tests {
             ("hello.zig", Some("zig")),
             ("hello.dart", Some("dart")),
             ("hello.cr", Some("crystal")),
-            ("path/to/HELLO.LUA", Some("lua")),     // case-insensitive
+            ("path/to/HELLO.LUA", Some("lua")), // case-insensitive
             ("noext", None),
             ("hello.unknown", None),
-            ("hello.rs", None),                      // rust scripts NYI
-            ("hello.kt", None),                      // .kt needs full compile
+            ("hello.rs", None), // rust scripts NYI
+            ("hello.kt", None), // .kt needs full compile
         ] {
             assert_eq!(
                 extension_to_lang(Path::new(file)),
@@ -404,7 +404,11 @@ mod tests {
         );
         assert_eq!(
             script_run_argv("deno", p).unwrap(),
-            vec!["deno".to_string(), "run".to_string(), "hello.lua".to_string()]
+            vec![
+                "deno".to_string(),
+                "run".to_string(),
+                "hello.lua".to_string()
+            ]
         );
         assert_eq!(
             script_run_argv("haskell", p).unwrap(),
@@ -412,7 +416,11 @@ mod tests {
         );
         assert_eq!(
             script_run_argv("kotlin", p).unwrap(),
-            vec!["kotlin".to_string(), "-script".to_string(), "hello.lua".to_string()]
+            vec![
+                "kotlin".to_string(),
+                "-script".to_string(),
+                "hello.lua".to_string()
+            ]
         );
         assert!(script_run_argv("perl", p).is_err());
     }
@@ -423,9 +431,8 @@ mod tests {
         // default version; otherwise the user gets "no curated
         // default" mid-flight on a fresh machine.
         for lang in [
-            "python", "lua", "ruby", "julia", "groovy", "java", "kotlin",
-            "scala", "clojure", "haskell", "node", "deno", "go", "zig",
-            "dart", "crystal",
+            "python", "lua", "ruby", "julia", "groovy", "java", "kotlin", "scala", "clojure",
+            "haskell", "node", "deno", "go", "zig", "dart", "crystal",
         ] {
             assert!(
                 default_version(lang).is_some(),
@@ -458,7 +465,11 @@ mod tests {
     #[test]
     fn inline_metadata_hash_comment_python() {
         assert_eq!(
-            read_md("py", "python", "# qusp: python = \"3.11.13\"\nprint('hi')\n"),
+            read_md(
+                "py",
+                "python",
+                "# qusp: python = \"3.11.13\"\nprint('hi')\n"
+            ),
             Some("3.11.13".to_string())
         );
     }
@@ -506,7 +517,11 @@ mod tests {
     #[test]
     fn inline_metadata_c_style_kotlin_kts() {
         assert_eq!(
-            read_md("kts", "kotlin", "// qusp: kotlin = 2.1.20\nprintln(\"hi\")\n"),
+            read_md(
+                "kts",
+                "kotlin",
+                "// qusp: kotlin = 2.1.20\nprintln(\"hi\")\n"
+            ),
             Some("2.1.20".to_string())
         );
     }
@@ -624,7 +639,10 @@ mod tests {
         match detect_script_invocation(&argv0) {
             ScriptInvocation::UnsupportedExtension(p) => {
                 let msg = unsupported_extension_message(&p);
-                assert!(msg.contains(".rs"), "expected message to mention .rs: {msg}");
+                assert!(
+                    msg.contains(".rs"),
+                    "expected message to mention .rs: {msg}"
+                );
                 assert!(msg.contains("cargo"), "expected cargo hint in: {msg}");
             }
             _ => panic!("expected UnsupportedExtension"),

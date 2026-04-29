@@ -284,13 +284,10 @@ async fn cmd_pin(
             let installed = backend.list_installed(paths).unwrap_or_default();
             // Exact match first, then distribution-prefix match
             // (e.g. user says "21", installed has "temurin-21").
-            let resolved = installed
-                .iter()
-                .find(|v| *v == &version)
-                .or_else(|| {
-                    let suffix = format!("-{version}");
-                    installed.iter().find(|v| v.ends_with(&suffix))
-                });
+            let resolved = installed.iter().find(|v| *v == &version).or_else(|| {
+                let suffix = format!("-{version}");
+                installed.iter().find(|v| v.ends_with(&suffix))
+            });
             let resolved = match resolved {
                 Some(v) => v.clone(),
                 None => bail!(
@@ -319,9 +316,7 @@ async fn cmd_pin(
                 if install_dir.exists() {
                     let farm = FarmManager::default();
                     let store_root = paths.store();
-                    if let Ok(r) =
-                        farm.install_links(&install_dir, &bins, true, &store_root)
-                    {
+                    if let Ok(r) = farm.install_links(&install_dir, &bins, true, &store_root) {
                         if !r.linked.is_empty() {
                             say!("  + farm: {}", r.linked.join(", "));
                         }
@@ -461,10 +456,7 @@ async fn cmd_install(
                             );
                         }
                     }
-                    Err(e) => eprintln!(
-                        "  {} farm: link install failed: {e:#}",
-                        color_yellow("!")
-                    ),
+                    Err(e) => eprintln!("  {} farm: link install failed: {e:#}", color_yellow("!")),
                 }
             }
         }
@@ -484,10 +476,7 @@ async fn cmd_install(
             }
             lock.upsert_backend(lang, entry);
             if let Err(e) = lock.save(&root) {
-                eprintln!(
-                    "{} could not persist qusp.lock: {e:#}",
-                    color_yellow("!")
-                );
+                eprintln!("{} could not persist qusp.lock: {e:#}", color_yellow("!"));
             }
         }
 
@@ -519,11 +508,7 @@ async fn cmd_install(
         let mut lock = lock::Lock::load(&root).unwrap_or_else(|_| lock::Lock::empty());
         for s in &result.installed {
             // Preserve any existing tools entry; just refresh version+distribution.
-            let mut entry = lock
-                .backends
-                .get(&s.lang)
-                .cloned()
-                .unwrap_or_default();
+            let mut entry = lock.backends.get(&s.lang).cloned().unwrap_or_default();
             entry.version = s.version.clone();
             // Distribution comes from the manifest if present.
             if let Some(sec) = m.languages.get(&s.lang) {
@@ -534,10 +519,7 @@ async fn cmd_install(
             lock.upsert_backend(&s.lang, entry);
         }
         if let Err(e) = lock.save(&root) {
-            eprintln!(
-                "{} could not persist qusp.lock: {e:#}",
-                color_yellow("!")
-            );
+            eprintln!("{} could not persist qusp.lock: {e:#}", color_yellow("!"));
         }
     }
     say!(
@@ -1380,7 +1362,10 @@ async fn cmd_list(
         .ok_or_else(|| anyhow!("unknown language: {lang}"))?;
     let (scope, versions) = if remote {
         let client = http()?;
-        (output::ListScope::Remote, backend.list_remote(&client).await?)
+        (
+            output::ListScope::Remote,
+            backend.list_remote(&client).await?,
+        )
     } else {
         (output::ListScope::Installed, backend.list_installed(paths)?)
     };
@@ -1507,9 +1492,7 @@ fn cmd_setup() -> Result<ExitCode> {
                 success_mark(),
                 color_green(&farm_dir)
             );
-            say!(
-                "  All apps (VSCode, Terminal, etc.) will see qusp-managed tools."
-            );
+            say!("  All apps (VSCode, Terminal, etc.) will see qusp-managed tools.");
             return Ok(ExitCode::SUCCESS);
         }
     }
@@ -1523,20 +1506,12 @@ fn cmd_setup() -> Result<ExitCode> {
     );
     say!("  {}", color_green(&farm_dir));
     say!("");
-    say!(
-        "  This ensures all macOS apps (including VSCode opened from Dock)"
-    );
+    say!("  This ensures all macOS apps (including VSCode opened from Dock)");
     say!("  can find qusp-managed tools on PATH.");
     say!("");
-    say!(
-        "  Requires {} (one-time). Run:",
-        color_bold("sudo")
-    );
+    say!("  Requires {} (one-time). Run:", color_bold("sudo"));
     say!("");
-    say!(
-        "    sudo sh -c 'echo {} > /etc/paths.d/qusp'",
-        farm_dir
-    );
+    say!("    sudo sh -c 'echo {} > /etc/paths.d/qusp'", farm_dir);
     say!("");
 
     // Try to write directly; if we lack permission, the message above
@@ -1599,10 +1574,7 @@ fn cmd_doctor(
         .split(':')
         .any(|p| p == farm_dir);
     if on_path {
-        say!(
-            "{} ~/.local/bin on PATH",
-            success_mark()
-        );
+        say!("{} ~/.local/bin on PATH", success_mark());
     } else {
         say!(
             "{} ~/.local/bin is NOT on PATH — add it to your shell rc",
@@ -1632,10 +1604,7 @@ fn cmd_doctor(
                 "{} /etc/paths.d/qusp missing — GUI apps (VSCode from Dock) won't see qusp tools",
                 color_yellow("!")
             );
-            say!(
-                "  → run {} to fix",
-                color_cyan("qusp setup")
-            );
+            say!("  → run {} to fix", color_cyan("qusp setup"));
         }
     }
 

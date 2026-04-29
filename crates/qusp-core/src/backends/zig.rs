@@ -97,9 +97,8 @@ impl Backend for ZigBackend {
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard = crate::effects::StoreLock::acquire(
-            &crate::effects::lock_path_for(&install_dir),
-        )?;
+        let _install_guard =
+            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
         let triple =
             target_triple().ok_or_else(|| anyhow!("ziglang.org has no asset for this platform"))?;
 
@@ -147,9 +146,7 @@ impl Backend for ZigBackend {
             anyv_core::paths::ensure_dir(parent)?;
         }
         crate::effects::atomic_symlink_swap(&inner, &install_dir)
-            .with_context(|| {
-                format!("symlink {} → {}", install_dir.display(), inner.display())
-            })?;
+            .with_context(|| format!("symlink {} → {}", install_dir.display(), inner.display()))?;
 
         Ok(InstallReport {
             version: version.to_string(),
@@ -211,9 +208,7 @@ impl Backend for ZigBackend {
 
     fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
         use crate::effects::FarmBinary;
-        vec![
-            FarmBinary::unversioned_flat("zig"),
-        ]
+        vec![FarmBinary::unversioned_flat("zig")]
     }
 }
 

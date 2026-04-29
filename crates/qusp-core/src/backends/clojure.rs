@@ -109,9 +109,8 @@ impl Backend for ClojureBackend {
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard = crate::effects::StoreLock::acquire(
-            &crate::effects::lock_path_for(&install_dir),
-        )?;
+        let _install_guard =
+            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
         let asset = format!("clojure-tools-{version}.tar.gz");
         let asset_url = format!("https://github.com/{REPO}/releases/download/{version}/{asset}");
         let sha_url = format!("{asset_url}.sha256");
@@ -206,15 +205,18 @@ impl Backend for ClojureBackend {
         // qusp data paths don't contain single quotes by construction.
         let lib_dir_quoted = crate::effects::shell_single_quote(&lib_dir.to_string_lossy());
         let bin_dir_quoted = crate::effects::shell_single_quote(&bin_dir.to_string_lossy());
-        let clojure_src = std::fs::read_to_string(stage.join("clojure"))
-            .context("read clojure-tools/clojure")?;
+        let clojure_src =
+            std::fs::read_to_string(stage.join("clojure")).context("read clojure-tools/clojure")?;
         let clj_src =
             std::fs::read_to_string(stage.join("clj")).context("read clojure-tools/clj")?;
         std::fs::write(
             bin_dir.join("clojure"),
             clojure_src.replace("PREFIX", &lib_dir_quoted),
         )?;
-        std::fs::write(bin_dir.join("clj"), clj_src.replace("BINDIR", &bin_dir_quoted))?;
+        std::fs::write(
+            bin_dir.join("clj"),
+            clj_src.replace("BINDIR", &bin_dir_quoted),
+        )?;
 
         // Man pages — nice-to-have, replicating upstream behaviour.
         for (src, dst) in [
@@ -240,9 +242,7 @@ impl Backend for ClojureBackend {
             anyv_core::paths::ensure_dir(parent)?;
         }
         crate::effects::atomic_symlink_swap(&prefix, &install_dir)
-            .with_context(|| {
-                format!("symlink {} → {}", install_dir.display(), prefix.display())
-            })?;
+            .with_context(|| format!("symlink {} → {}", install_dir.display(), prefix.display()))?;
 
         Ok(InstallReport {
             version: version.to_string(),
@@ -371,21 +371,11 @@ mod tests {
 
     #[test]
     fn version_cmp_orders_clojure_4_segment() {
-        let mut v = vec![
-            "1.12.4.1618",
-            "1.12.0.1530",
-            "1.11.4.1474",
-            "1.12.4.1500",
-        ];
+        let mut v = vec!["1.12.4.1618", "1.12.0.1530", "1.11.4.1474", "1.12.4.1500"];
         v.sort_by(|a, b| version_cmp(b, a));
         assert_eq!(
             v,
-            vec![
-                "1.12.4.1618",
-                "1.12.4.1500",
-                "1.12.0.1530",
-                "1.11.4.1474",
-            ]
+            vec!["1.12.4.1618", "1.12.4.1500", "1.12.0.1530", "1.11.4.1474",]
         );
     }
 }

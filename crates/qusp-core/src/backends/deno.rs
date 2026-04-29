@@ -107,9 +107,8 @@ impl Backend for DenoBackend {
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard = crate::effects::StoreLock::acquire(
-            &crate::effects::lock_path_for(&install_dir),
-        )?;
+        let _install_guard =
+            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
         let triple = target_triple()
             .ok_or_else(|| anyhow!("denoland/deno has no asset for this platform"))?;
         let v_strip = strip_v(version);
@@ -199,10 +198,13 @@ impl Backend for DenoBackend {
         if let Some(parent) = install_dir.parent() {
             anyv_core::paths::ensure_dir(parent)?;
         }
-        crate::effects::atomic_symlink_swap(&store_dir, &install_dir)
-            .with_context(|| {
-                format!("symlink {} → {}", install_dir.display(), store_dir.display())
-            })?;
+        crate::effects::atomic_symlink_swap(&store_dir, &install_dir).with_context(|| {
+            format!(
+                "symlink {} → {}",
+                install_dir.display(),
+                store_dir.display()
+            )
+        })?;
 
         let _ = std::fs::remove_file(&cache_path);
         Ok(InstallReport {
@@ -287,9 +289,7 @@ impl Backend for DenoBackend {
 
     fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
         use crate::effects::FarmBinary;
-        vec![
-            FarmBinary::unversioned("deno"),
-        ]
+        vec![FarmBinary::unversioned("deno")]
     }
 }
 

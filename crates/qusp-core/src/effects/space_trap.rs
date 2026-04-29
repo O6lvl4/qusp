@@ -105,9 +105,7 @@ pub fn mktemp_no_space(label: &str) -> Result<PathBuf> {
 /// `CreateSymbolicLink` privilege check.
 pub fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
     anyv_core::paths::ensure_dir(dst)?;
-    for entry in std::fs::read_dir(src)
-        .with_context(|| format!("read_dir {}", src.display()))?
-    {
+    for entry in std::fs::read_dir(src).with_context(|| format!("read_dir {}", src.display()))? {
         let entry = entry?;
         let from = entry.path();
         let to = dst.join(entry.file_name());

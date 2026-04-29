@@ -103,9 +103,8 @@ impl Backend for GroovyBackend {
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard = crate::effects::StoreLock::acquire(
-            &crate::effects::lock_path_for(&install_dir),
-        )?;
+        let _install_guard =
+            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
         let asset = format!("apache-groovy-binary-{version}.zip");
         let asset_url = format!("{DIST_BASE}/{version}/distribution/{asset}");
         let sha_url = format!("{asset_url}.sha256");
@@ -114,8 +113,8 @@ impl Backend for GroovyBackend {
             .get_text(&sha_url)
             .await
             .with_context(|| format!("fetch {sha_url}"))?;
-        let expected = parse_sha256_sidecar(&sha_text)
-            .ok_or_else(|| anyhow!("empty .sha256 for {asset}"))?;
+        let expected =
+            parse_sha256_sidecar(&sha_text).ok_or_else(|| anyhow!("empty .sha256 for {asset}"))?;
 
         let mut task = progress.start(&format!("downloading groovy {version}"), None);
         let bytes = http
@@ -182,10 +181,13 @@ impl Backend for GroovyBackend {
         if let Some(parent) = install_dir.parent() {
             anyv_core::paths::ensure_dir(parent)?;
         }
-        crate::effects::atomic_symlink_swap(&groovy_top, &install_dir)
-            .with_context(|| {
-                format!("symlink {} → {}", install_dir.display(), groovy_top.display())
-            })?;
+        crate::effects::atomic_symlink_swap(&groovy_top, &install_dir).with_context(|| {
+            format!(
+                "symlink {} → {}",
+                install_dir.display(),
+                groovy_top.display()
+            )
+        })?;
 
         Ok(InstallReport {
             version: version.to_string(),
@@ -403,7 +405,9 @@ mod tests {
     #[test]
     fn parses_sha256_sidecar_trim() {
         assert_eq!(
-            parse_sha256_sidecar("d91a3ddfe353871d4c2656d3d0a05c828bc3ff36e9d49dbdbec13dcd98f05877\n"),
+            parse_sha256_sidecar(
+                "d91a3ddfe353871d4c2656d3d0a05c828bc3ff36e9d49dbdbec13dcd98f05877\n"
+            ),
             Some("d91a3ddfe353871d4c2656d3d0a05c828bc3ff36e9d49dbdbec13dcd98f05877".to_string())
         );
         assert_eq!(parse_sha256_sidecar(""), None);

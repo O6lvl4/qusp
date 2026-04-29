@@ -93,8 +93,7 @@ impl<'a> Orchestrator<'a> {
         let mut installed = Vec::new();
         let mut failed = Vec::new();
         // Load global pins once for the post-install farm pass.
-        let global_pins = crate::effects::GlobalPins::load(&self.paths.config)
-            .unwrap_or_default();
+        let global_pins = crate::effects::GlobalPins::load(&self.paths.config).unwrap_or_default();
         let farm = crate::effects::FarmManager::default();
         let store_root = self.paths.store();
         for (lang, version, result) in outcomes {
