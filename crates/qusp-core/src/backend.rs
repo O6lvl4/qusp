@@ -12,7 +12,7 @@ use anyv_core::Paths;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::effects::{HttpFetcher, ProgressReporter};
+use crate::effects::{FarmBinary, HttpFetcher, ProgressReporter};
 
 /// A version pinned by some manifest the backend understands.
 #[derive(Debug, Clone)]
@@ -205,4 +205,18 @@ pub trait Backend: Send + Sync {
 
     /// Build the env (PATH, language-specific vars) for `qusp run`.
     fn build_run_env(&self, paths: &Paths, version: &str, cwd: &Path) -> Result<RunEnv>;
+
+    /// Binaries this backend wants exposed in the global symlink farm
+    /// (`~/.local/bin/python3.13` style). The orchestrator calls this
+    /// after a successful `install()` and materialises versioned
+    /// links unconditionally; unversioned links only when the user
+    /// has set a global pin matching the install version.
+    ///
+    /// Default: empty. A backend opts in by overriding. The full
+    /// migration of all 18 backends is gradual — backends not yet
+    /// declaring farm_binaries simply don't get global bare commands,
+    /// which is the v0.28.x behaviour preserved.
+    fn farm_binaries(&self, _version: &str) -> Vec<FarmBinary> {
+        Vec::new()
+    }
 }

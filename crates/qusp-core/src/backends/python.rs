@@ -293,6 +293,28 @@ impl Backend for PythonBackend {
             env: Default::default(),
         })
     }
+
+    /// Python is qusp's richest farm exposure: the install ships
+    /// versioned `python3.X` / `pip3.X` (always farmed, no conflict
+    /// across installs) plus unversioned `python` / `python3` /
+    /// `pip` / `pip3` (only farmed when user has globally pinned
+    /// this version).
+    fn farm_binaries(&self, version: &str) -> Vec<crate::effects::FarmBinary> {
+        use crate::effects::FarmBinary;
+        let mut bins = Vec::new();
+        let mm = python_minor_prefix(version);
+        if !mm.is_empty() {
+            bins.push(FarmBinary::versioned(format!("python{mm}")));
+            bins.push(FarmBinary::versioned(format!("pip{mm}")));
+        }
+        bins.extend([
+            FarmBinary::unversioned("python"),
+            FarmBinary::unversioned("python3"),
+            FarmBinary::unversioned("pip"),
+            FarmBinary::unversioned("pip3"),
+        ]);
+        bins
+    }
 }
 
 fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {

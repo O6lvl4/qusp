@@ -192,4 +192,12 @@ impl Backend for GoBackend {
             env,
         })
     }
+
+    fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
+        use crate::effects::FarmBinary;
+        vec![
+            FarmBinary::unversioned("go"),
+            FarmBinary::unversioned("gofmt"),
+        ]
+    }
 }

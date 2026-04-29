@@ -174,4 +174,17 @@ impl Backend for RubyBackend {
             env: Default::default(),
         })
     }
+
+    fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
+        use crate::effects::FarmBinary;
+        vec![
+            FarmBinary::unversioned("ruby"),
+            FarmBinary::unversioned("irb"),
+            FarmBinary::unversioned("gem"),
+            FarmBinary::unversioned("rake"),
+            FarmBinary::unversioned("rdoc"),
+            FarmBinary::unversioned("ri"),
+            FarmBinary::unversioned("erb"),
+        ]
+    }
 }

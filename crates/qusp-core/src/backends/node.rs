@@ -386,6 +386,16 @@ impl Backend for NodeBackend {
             env: Default::default(),
         })
     }
+
+    fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
+        use crate::effects::FarmBinary;
+        vec![
+            FarmBinary::unversioned("node"),
+            FarmBinary::unversioned("npm"),
+            FarmBinary::unversioned("npx"),
+            FarmBinary::unversioned("corepack"),
+        ]
+    }
 }
 
 fn pick_bin(bin: &serde_json::Value, tool_name: &str, pkg: &str) -> Option<String> {

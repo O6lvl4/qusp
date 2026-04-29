@@ -336,6 +336,14 @@ impl Backend for LuaBackend {
             env,
         })
     }
+
+    fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
+        use crate::effects::FarmBinary;
+        vec![
+            FarmBinary::unversioned("lua"),
+            FarmBinary::unversioned("luac"),
+        ]
+    }
 }
 
 fn run_lua_build(src_dir: &Path, prefix: &Path, plat: &str) -> Result<()> {

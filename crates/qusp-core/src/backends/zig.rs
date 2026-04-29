@@ -208,6 +208,13 @@ impl Backend for ZigBackend {
             env: Default::default(),
         })
     }
+
+    fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
+        use crate::effects::FarmBinary;
+        vec![
+            FarmBinary::unversioned("zig"),
+        ]
+    }
 }
 
 /// Pure: pick `(tarball_url, sha256)` for the given version + triple

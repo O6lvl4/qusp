@@ -270,6 +270,19 @@ impl Backend for KotlinBackend {
             env,
         })
     }
+
+    fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
+        use crate::effects::FarmBinary;
+        vec![
+            FarmBinary::unversioned("kotlin"),
+            FarmBinary::unversioned("kotlinc"),
+            FarmBinary::unversioned("kotlinc-jvm"),
+            FarmBinary::unversioned("kotlinc-js"),
+            FarmBinary::unversioned("kotlin-jvm"),
+            FarmBinary::unversioned("kotlin-js"),
+            FarmBinary::unversioned("kapt"),
+        ]
+    }
 }
 
 fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {

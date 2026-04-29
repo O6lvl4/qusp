@@ -284,6 +284,13 @@ impl Backend for DenoBackend {
             env: Default::default(),
         })
     }
+
+    fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
+        use crate::effects::FarmBinary;
+        vec![
+            FarmBinary::unversioned("deno"),
+        ]
+    }
 }
 
 fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {

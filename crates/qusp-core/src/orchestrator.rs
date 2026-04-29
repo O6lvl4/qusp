@@ -86,19 +86,53 @@ impl<'a> Orchestrator<'a> {
                 let result = backend
                     .install(&paths, &version, &opts, &http, &progress)
                     .await;
-                (lang, result)
+                (lang, version, result)
             });
         }
         let outcomes = futures::future::join_all(futs).await;
         let mut installed = Vec::new();
         let mut failed = Vec::new();
-        for (lang, result) in outcomes {
+        // Load global pins once for the post-install farm pass.
+        let global_pins = crate::effects::GlobalPins::load(&self.paths.config)
+            .unwrap_or_default();
+        let farm = crate::effects::FarmManager::default();
+        let store_root = self.paths.store();
+        for (lang, version, result) in outcomes {
             match result {
-                Ok(report) => installed.push(InstallSummary {
-                    lang,
-                    version: report.version,
-                    already_present: report.already_present,
-                }),
+                Ok(report) => {
+                    // Materialise farm symlinks. Versioned binaries
+                    // unconditionally; unversioned only when the user's
+                    // global pin says this version is the bare-command
+                    // owner. Failures are non-fatal — the install
+                    // succeeded, the farm is a UX add-on.
+                    if !report.already_present {
+                        let backend = self.registry.get(&lang);
+                        if let Some(backend) = backend {
+                            let bins = backend.farm_binaries(&version);
+                            if !bins.is_empty() {
+                                let pin_matches = global_pins
+                                    .get(&lang)
+                                    .map(|p| p.version == version)
+                                    .unwrap_or(false);
+                                if let Err(e) = farm.install_links(
+                                    &report.install_dir,
+                                    &bins,
+                                    pin_matches,
+                                    &store_root,
+                                ) {
+                                    tracing::warn!(
+                                        "farm: link install failed for {lang} {version}: {e:#}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    installed.push(InstallSummary {
+                        lang,
+                        version: report.version,
+                        already_present: report.already_present,
+                    });
+                }
                 Err(e) => failed.push((lang, format!("{e:#}"))),
             }
         }

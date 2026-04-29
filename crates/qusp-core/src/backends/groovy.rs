@@ -254,6 +254,17 @@ impl Backend for GroovyBackend {
             env,
         })
     }
+
+    fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
+        use crate::effects::FarmBinary;
+        vec![
+            FarmBinary::unversioned("groovy"),
+            FarmBinary::unversioned("groovyc"),
+            FarmBinary::unversioned("groovysh"),
+            FarmBinary::unversioned("groovyConsole"),
+            FarmBinary::unversioned("grape"),
+        ]
+    }
 }
 
 fn parse_sha256_sidecar(s: &str) -> Option<String> {

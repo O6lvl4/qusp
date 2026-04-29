@@ -276,6 +276,14 @@ impl Backend for BunBackend {
             env: Default::default(),
         })
     }
+
+    fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
+        use crate::effects::FarmBinary;
+        vec![
+            FarmBinary::unversioned("bun"),
+            FarmBinary::unversioned("bunx"),
+        ]
+    }
 }
 
 fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {

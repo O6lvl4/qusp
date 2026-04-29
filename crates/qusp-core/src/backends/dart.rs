@@ -269,6 +269,13 @@ impl Backend for DartBackend {
             env,
         })
     }
+
+    fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
+        use crate::effects::FarmBinary;
+        vec![
+            FarmBinary::unversioned("dart"),
+        ]
+    }
 }
 
 /// BSD-`sha256sum` style sidecar: `<HEX> *<filename>` (or `<HEX>  <filename>`

@@ -501,6 +501,23 @@ impl Backend for JavaBackend {
             env,
         })
     }
+
+    fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
+        use crate::effects::FarmBinary;
+        vec![
+            FarmBinary::unversioned("java"),
+            FarmBinary::unversioned("javac"),
+            FarmBinary::unversioned("javadoc"),
+            FarmBinary::unversioned("jar"),
+            FarmBinary::unversioned("jshell"),
+            FarmBinary::unversioned("jdeps"),
+            FarmBinary::unversioned("jlink"),
+            FarmBinary::unversioned("jpackage"),
+            FarmBinary::unversioned("jstack"),
+            FarmBinary::unversioned("jcmd"),
+            FarmBinary::unversioned("keytool"),
+        ]
+    }
 }
 
 fn java_home_bin(install_dir: &Path) -> Option<PathBuf> {

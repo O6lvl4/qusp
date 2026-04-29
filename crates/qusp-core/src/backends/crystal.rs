@@ -246,6 +246,14 @@ impl Backend for CrystalBackend {
             env: Default::default(),
         })
     }
+
+    fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
+        use crate::effects::FarmBinary;
+        vec![
+            FarmBinary::unversioned("crystal"),
+            FarmBinary::unversioned("shards"),
+        ]
+    }
 }
 
 /// Pure: among a release's assets, pick the one whose name matches

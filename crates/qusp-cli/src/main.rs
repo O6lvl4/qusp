@@ -1,4 +1,4 @@
-//! qusp CLI — v0.28.3.
+//! qusp CLI — v0.29.0.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
@@ -142,6 +142,33 @@ enum Cmd {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// Set, list, or remove the global pin for a language. Global pins
+    /// control which version owns the **unversioned** bare command
+    /// (`python`, `cargo`, `scala`) in the symlink farm at
+    /// `~/.local/bin/`. Versioned binaries (`python3.13`, `ruby3.4`)
+    /// are always exposed by every install.
+    Pin {
+        #[command(subcommand)]
+        cmd: PinCmd,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum PinCmd {
+    /// Set the global pin for a language. Optional `--distribution`
+    /// for multi-vendor backends (java).
+    Set {
+        lang: String,
+        version: String,
+        #[arg(long)]
+        distribution: Option<String>,
+    },
+    /// List current global pins.
+    List,
+    /// Remove the global pin for a language. Existing bare-command
+    /// symlinks pointing at the previously-pinned version are NOT
+    /// auto-removed (use `qusp uninstall` or remove the link manually).
+    Rm { lang: String },
 }
 
 #[derive(Debug, Subcommand)]
@@ -229,6 +256,87 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Doctor => cmd_doctor(&registry, &paths, fmt),
         Cmd::Dir { kind } => cmd_dir(&paths, kind, fmt),
         Cmd::Completions { shell } => cmd_completions(shell),
+        Cmd::Pin { cmd } => cmd_pin(&registry, &paths, cmd, fmt).await,
+    }
+}
+
+async fn cmd_pin(
+    r: &BackendRegistry,
+    paths: &qusp_core::Paths,
+    cmd: PinCmd,
+    _fmt: OutputFormat,
+) -> Result<ExitCode> {
+    use qusp_core::effects::{FarmManager, GlobalPins};
+    let mut pins = GlobalPins::load(&paths.config).unwrap_or_default();
+    match cmd {
+        PinCmd::Set {
+            lang,
+            version,
+            distribution,
+        } => {
+            let backend = r
+                .get(&lang)
+                .ok_or_else(|| anyhow!("unknown language: {lang}"))?;
+            let installed = backend.list_installed(paths).unwrap_or_default();
+            if !installed.iter().any(|v| v == &version) {
+                bail!(
+                    "{lang} {version} is not installed via qusp.\n  → run `qusp install {lang} {version}` first, then `qusp pin set {lang} {version}`"
+                );
+            }
+            pins.set(&lang, &version, distribution.as_deref());
+            pins.save(&paths.config)?;
+            say!(
+                "{} pinned {} {} globally",
+                success_mark(),
+                color_cyan(&lang),
+                color_bold(&version)
+            );
+            // Re-materialise unversioned symlinks for this lang.
+            let bins = backend.farm_binaries(&version);
+            if !bins.is_empty() {
+                let install_dir = paths.data.join(&lang).join(&version);
+                if install_dir.exists() {
+                    let farm = FarmManager::default();
+                    let store_root = paths.store();
+                    if let Ok(r) =
+                        farm.install_links(&install_dir, &bins, true, &store_root)
+                    {
+                        if !r.linked.is_empty() {
+                            say!("  + farm: {}", r.linked.join(", "));
+                        }
+                    }
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        PinCmd::List => {
+            if pins.pins.is_empty() {
+                say!("{}", dim("(no global pins set)"));
+                return Ok(ExitCode::SUCCESS);
+            }
+            for (lang, pin) in &pins.pins {
+                let dist = if pin.distribution.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", pin.distribution)
+                };
+                println!(
+                    "  {} {}{}",
+                    color_cyan(lang),
+                    color_bold(&pin.version),
+                    dim(&dist)
+                );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        PinCmd::Rm { lang } => {
+            if pins.remove(&lang).is_none() {
+                bail!("no global pin set for {lang}");
+            }
+            pins.save(&paths.config)?;
+            say!("{} unpinned {} globally", success_mark(), color_cyan(&lang));
+            Ok(ExitCode::SUCCESS)
+        }
     }
 }
 
@@ -300,6 +408,43 @@ async fn cmd_install(
         say!("{} {lang} {} installed", success_mark(), report.version);
         if !report.install_dir.as_os_str().is_empty() {
             say!("  → {}", report.install_dir.display());
+        }
+
+        // v0.29.0 farm: materialise global symlinks (`~/.local/bin/...`).
+        if !report.already_present {
+            let bins = backend.farm_binaries(&report.version);
+            if !bins.is_empty() {
+                let global_pins =
+                    qusp_core::effects::GlobalPins::load(&paths.config).unwrap_or_default();
+                let pin_matches = global_pins
+                    .get(lang)
+                    .map(|p| p.version == report.version)
+                    .unwrap_or(false);
+                let farm = qusp_core::effects::FarmManager::default();
+                let store_root = paths.store();
+                match farm.install_links(&report.install_dir, &bins, pin_matches, &store_root) {
+                    Ok(r) => {
+                        if !r.linked.is_empty() {
+                            say!(
+                                "  + farm: {} ({} link{})",
+                                r.linked.join(", "),
+                                r.linked.len(),
+                                if r.linked.len() == 1 { "" } else { "s" }
+                            );
+                        }
+                        for (link, target) in &r.skipped_foreign {
+                            eprintln!(
+                                "  {} farm: skipped {link} (held by {target})",
+                                color_yellow("!"),
+                            );
+                        }
+                    }
+                    Err(e) => eprintln!(
+                        "  {} farm: link install failed: {e:#}",
+                        color_yellow("!")
+                    ),
+                }
+            }
         }
 
         // P2 fix (dogfood 2026-04-29): the with-arg `qusp install <lang> <ver>`

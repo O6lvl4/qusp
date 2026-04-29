@@ -259,6 +259,20 @@ impl Backend for RustBackend {
             env,
         })
     }
+
+    fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
+        use crate::effects::FarmBinary;
+        vec![
+            FarmBinary::unversioned("cargo"),
+            FarmBinary::unversioned("rustc"),
+            FarmBinary::unversioned("rustdoc"),
+            FarmBinary::unversioned("rustfmt"),
+            FarmBinary::unversioned("clippy-driver"),
+            FarmBinary::unversioned("rust-analyzer"),
+            FarmBinary::unversioned("rust-gdb"),
+            FarmBinary::unversioned("rust-lldb"),
+        ]
+    }
 }
 
 /// Resolve `stable`/`beta`/`nightly` to a concrete version string by

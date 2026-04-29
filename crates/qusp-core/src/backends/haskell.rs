@@ -313,6 +313,19 @@ impl Backend for HaskellBackend {
             env,
         })
     }
+
+    fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
+        use crate::effects::FarmBinary;
+        vec![
+            FarmBinary::unversioned("ghc"),
+            FarmBinary::unversioned("ghci"),
+            FarmBinary::unversioned("runghc"),
+            FarmBinary::unversioned("runhaskell"),
+            FarmBinary::unversioned("ghc-pkg"),
+            FarmBinary::unversioned("haddock"),
+            FarmBinary::unversioned("hsc2hs"),
+        ]
+    }
 }
 
 /// Run `ghcup install ghc <version>` against a qusp-controlled prefix.
