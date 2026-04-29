@@ -109,7 +109,7 @@ $ which python
 
 ## Languages
 
-20 backends, all native Rust:
+21 backends, all native Rust:
 
 | Backend | Source | Verification | Tools |
 |---|---|---|---|
@@ -132,6 +132,7 @@ $ which python
 | **elm** | elm/compiler GitHub releases | content-addressed | — |
 | **gleam** | gleam-lang/gleam releases | sha256 + sigstore | — |
 | **lua** | lua.org source (compiled locally) | sha256 | — |
+| **php** | php-build-standalone | sha256 | — |
 | **haskell** | GHCup releases | sha256 | — |
 
 Every install **verifies a publisher-published hash** before extracting.
@@ -151,7 +152,7 @@ Resolution goes through Foojay disco, the same registry SDKMAN uses.
 
 | | mise / asdf | proto | uv (Python) | sdkman | devbox / Nix | **qusp** |
 |---|---|---|---|---|---|---|
-| Languages | 100+ via plugins | ~15 | 1 | JVM only | unlimited via Nix | 20 native |
+| Languages | 100+ via plugins | ~15 | 1 | JVM only | unlimited via Nix | 21 native |
 | Plugin model | bash plugins | Rust | n/a | bash | derivations | none — native Rust |
 | Hash verification | varies | varies | strict | sha256 | derivation | **strict, every install** |
 | Subprocess freeloading | yes | partial | none | yes | none | **none** |
@@ -205,14 +206,14 @@ and design decisions.
 
 - A package manager. It manages toolchains, not Maven/npm/PyPI artifacts.
 - A reproducible-OS environment manager. Use Nix or devbox for that.
-- A plugin platform. The strength is curated quality across 20 languages.
+- A plugin platform. The strength is curated quality across 21 languages.
 - A drop-in replacement for `cargo install` / `npm install -g` / `gem install`
   / `pip install`. Tools that have peer-dep complexity are intentionally
   not in qusp's curated registries.
 
 ## Status
 
-**v0.29.1** — 20 languages, symlink farm, global pins, VSCode/GUI integration.
+**v0.29.1** — 21 languages, symlink farm, global pins, VSCode/GUI integration.
 
 - Symlink farm: `qusp install` + `qusp pin set` exposes bare commands in `~/.local/bin/`
 - Global pins: per-language version control for unversioned bare commands
