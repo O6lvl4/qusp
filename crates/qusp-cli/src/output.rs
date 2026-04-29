@@ -23,7 +23,7 @@ use std::path::Path;
 
 use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum OutputFormat {
     Text,
     Json,

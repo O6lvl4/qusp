@@ -142,6 +142,9 @@ enum Cmd {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// One-time system setup: ensure ~/.local/bin is visible to all apps
+    /// (including VSCode launched from Dock). Creates /etc/paths.d/qusp.
+    Setup,
     /// Set, list, or remove the global pin for a language. Global pins
     /// control which version owns the **unversioned** bare command
     /// (`python`, `cargo`, `scala`) in the symlink farm at
@@ -256,6 +259,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Doctor => cmd_doctor(&registry, &paths, fmt),
         Cmd::Dir { kind } => cmd_dir(&paths, kind, fmt),
         Cmd::Completions { shell } => cmd_completions(shell),
+        Cmd::Setup => cmd_setup(),
         Cmd::Pin { cmd } => cmd_pin(&registry, &paths, cmd, fmt).await,
     }
 }
@@ -1487,6 +1491,74 @@ async fn cmd_tree(r: &BackendRegistry, paths: &qusp_core::Paths) -> Result<ExitC
     Ok(ExitCode::SUCCESS)
 }
 
+fn cmd_setup() -> Result<ExitCode> {
+    let paths_d = Path::new("/etc/paths.d/qusp");
+    let farm_dir = std::env::var("HOME")
+        .map(|h| format!("{h}/.local/bin"))
+        .unwrap_or_else(|_| String::from("/usr/local/bin"));
+
+    // Check current state.
+    if paths_d.is_file() {
+        let content = std::fs::read_to_string(paths_d).unwrap_or_default();
+        if content.trim() == farm_dir {
+            say!(
+                "{} /etc/paths.d/qusp already configured → {}",
+                success_mark(),
+                color_green(&farm_dir)
+            );
+            say!(
+                "  All apps (VSCode, Terminal, etc.) will see qusp-managed tools."
+            );
+            return Ok(ExitCode::SUCCESS);
+        }
+    }
+
+    // Explain what we're about to do.
+    say!("{}", color_bold("qusp setup"));
+    say!("");
+    say!(
+        "  This creates {} containing:",
+        color_cyan("/etc/paths.d/qusp")
+    );
+    say!("  {}", color_green(&farm_dir));
+    say!("");
+    say!(
+        "  This ensures all macOS apps (including VSCode opened from Dock)"
+    );
+    say!("  can find qusp-managed tools on PATH.");
+    say!("");
+    say!(
+        "  Requires {} (one-time). Run:",
+        color_bold("sudo")
+    );
+    say!("");
+    say!(
+        "    sudo sh -c 'echo {} > /etc/paths.d/qusp'",
+        farm_dir
+    );
+    say!("");
+
+    // Try to write directly; if we lack permission, the message above
+    // already told the user the manual command.
+    match std::fs::write(paths_d, format!("{farm_dir}\n")) {
+        Ok(()) => {
+            say!(
+                "{} /etc/paths.d/qusp created. Restart apps to pick up the new PATH.",
+                success_mark()
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            say!(
+                "{}",
+                color_yellow("  (permission denied — run the sudo command above)")
+            );
+            Ok(ExitCode::from(1))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
 fn cmd_doctor(
     r: &BackendRegistry,
     paths: &qusp_core::Paths,
@@ -1509,6 +1581,79 @@ fn cmd_doctor(
         backends,
     };
     fmt.emit(&out);
+
+    // --- Additional health checks (text mode only) ---
+    if fmt != OutputFormat::Text {
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    say!("");
+
+    // 1. Farm dir on PATH?
+    let farm_dir = std::env::var("HOME")
+        .map(|h| format!("{h}/.local/bin"))
+        .unwrap_or_default();
+    let on_path = std::env::var("PATH")
+        .unwrap_or_default()
+        .split(':')
+        .any(|p| p == farm_dir);
+    if on_path {
+        say!(
+            "{} ~/.local/bin on PATH",
+            success_mark()
+        );
+    } else {
+        say!(
+            "{} ~/.local/bin is NOT on PATH — add it to your shell rc",
+            color_yellow("!")
+        );
+    }
+
+    // 2. /etc/paths.d/qusp (macOS GUI app visibility)?
+    #[cfg(target_os = "macos")]
+    {
+        let paths_d = Path::new("/etc/paths.d/qusp");
+        if paths_d.is_file() {
+            let content = std::fs::read_to_string(paths_d).unwrap_or_default();
+            if content.trim().contains(".local/bin") {
+                say!(
+                    "{} /etc/paths.d/qusp configured (VSCode/GUI apps can see qusp tools)",
+                    success_mark()
+                );
+            } else {
+                say!(
+                    "{} /etc/paths.d/qusp exists but doesn't contain ~/.local/bin",
+                    color_yellow("!")
+                );
+            }
+        } else {
+            say!(
+                "{} /etc/paths.d/qusp missing — GUI apps (VSCode from Dock) won't see qusp tools",
+                color_yellow("!")
+            );
+            say!(
+                "  → run {} to fix",
+                color_cyan("qusp setup")
+            );
+        }
+    }
+
+    // 3. Global pins summary.
+    let pins = qusp_core::effects::GlobalPins::load(&paths.config).unwrap_or_default();
+    if pins.pins.is_empty() {
+        say!(
+            "{} no global pins set (run {} to expose bare commands)",
+            color_yellow("!"),
+            color_cyan("qusp pin set <lang> <ver>")
+        );
+    } else {
+        say!(
+            "{} {} global pin(s) active",
+            success_mark(),
+            pins.pins.len()
+        );
+    }
+
     Ok(ExitCode::SUCCESS)
 }
 
