@@ -1115,6 +1115,7 @@ dependencies = [
  "async-trait",
  "base64",
  "bytes",
+ "flate2",
  "fs2",
  "futures",
  "futures-util",

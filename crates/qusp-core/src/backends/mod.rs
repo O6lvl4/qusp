@@ -7,6 +7,7 @@ pub mod clojure;
 pub mod crystal;
 pub mod dart;
 pub mod deno;
+pub mod elm;
 pub mod go;
 pub mod groovy;
 pub mod haskell;

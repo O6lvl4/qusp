@@ -368,6 +368,7 @@ fn build_registry() -> BackendRegistry {
     r.register(Arc::new(backends::python::PythonBackend));
     r.register(Arc::new(backends::node::NodeBackend));
     r.register(Arc::new(backends::deno::DenoBackend));
+    r.register(Arc::new(backends::elm::ElmBackend));
     r.register(Arc::new(backends::java::JavaBackend));
     r.register(Arc::new(backends::rust::RustBackend));
     r.register(Arc::new(backends::bun::BunBackend));
