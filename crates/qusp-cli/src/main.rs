@@ -278,12 +278,29 @@ async fn cmd_pin(
                 .get(&lang)
                 .ok_or_else(|| anyhow!("unknown language: {lang}"))?;
             let installed = backend.list_installed(paths).unwrap_or_default();
-            if !installed.iter().any(|v| v == &version) {
-                bail!(
+            // Exact match first, then distribution-prefix match
+            // (e.g. user says "21", installed has "temurin-21").
+            let resolved = installed
+                .iter()
+                .find(|v| *v == &version)
+                .or_else(|| {
+                    let suffix = format!("-{version}");
+                    installed.iter().find(|v| v.ends_with(&suffix))
+                });
+            let resolved = match resolved {
+                Some(v) => v.clone(),
+                None => bail!(
                     "{lang} {version} is not installed via qusp.\n  → run `qusp install {lang} {version}` first, then `qusp pin set {lang} {version}`"
-                );
-            }
-            pins.set(&lang, &version, distribution.as_deref());
+                ),
+            };
+            // If distribution was inferred from the installed name (e.g.
+            // "temurin-21"), use it unless the user explicitly specified one.
+            let dist = distribution.clone().or_else(|| {
+                resolved
+                    .strip_suffix(&format!("-{version}"))
+                    .map(|d| d.to_string())
+            });
+            pins.set(&lang, &version, dist.as_deref());
             pins.save(&paths.config)?;
             say!(
                 "{} pinned {} {} globally",
@@ -294,7 +311,7 @@ async fn cmd_pin(
             // Re-materialise unversioned symlinks for this lang.
             let bins = backend.farm_binaries(&version);
             if !bins.is_empty() {
-                let install_dir = paths.data.join(&lang).join(&version);
+                let install_dir = paths.data.join(&lang).join(&resolved);
                 if install_dir.exists() {
                     let farm = FarmManager::default();
                     let store_root = paths.store();
