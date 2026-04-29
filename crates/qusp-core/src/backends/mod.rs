@@ -8,6 +8,7 @@ pub mod crystal;
 pub mod dart;
 pub mod deno;
 pub mod elm;
+pub mod gleam;
 pub mod go;
 pub mod groovy;
 pub mod haskell;
