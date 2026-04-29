@@ -1,4 +1,4 @@
-//! qusp CLI — v0.28.2.
+//! qusp CLI — v0.28.3.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
@@ -993,15 +993,15 @@ fn cmd_init(r: &BackendRegistry, langs: Option<Vec<String>>, force: bool) -> Res
             let example = match id {
                 "go" => "1.26.2",
                 "ruby" => "3.4.7",
-                "python" => "3.13.0",
+                "python" => "3.14.4",
                 "node" => "22.9.0",
-                "deno" => "2.0.0",
-                "bun" => "1.2.0",
+                "deno" => "2.7.14",
+                "bun" => "1.3.13",
                 "java" => "21",
-                "kotlin" => "2.1.20",
+                "kotlin" => "2.3.21",
                 "rust" => "1.95.0",
                 "zig" => "0.16.0",
-                "julia" => "1.10.4",
+                "julia" => "1.12.6",
                 "crystal" => "1.20.0",
                 "groovy" => "4.0.22",
                 "dart" => "3.5.4",
@@ -1029,15 +1029,15 @@ fn cmd_init(r: &BackendRegistry, langs: Option<Vec<String>>, force: bool) -> Res
             let example = match id.as_str() {
                 "go" => "1.26.2",
                 "ruby" => "3.4.7",
-                "python" => "3.13.0",
+                "python" => "3.14.4",
                 "node" => "22.9.0",
-                "deno" => "2.0.0",
-                "bun" => "1.2.0",
+                "deno" => "2.7.14",
+                "bun" => "1.3.13",
                 "java" => "21",
-                "kotlin" => "2.1.20",
+                "kotlin" => "2.3.21",
                 "rust" => "1.95.0",
                 "zig" => "0.16.0",
-                "julia" => "1.10.4",
+                "julia" => "1.12.6",
                 "crystal" => "1.20.0",
                 "groovy" => "4.0.22",
                 "dart" => "3.5.4",
