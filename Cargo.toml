@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/qusp-core", "crates/qusp-cli"]
 
 [workspace.package]
-version = "0.29.1"
+version = "0.30.0"
 edition = "2021"
 rust-version = "1.85"
 authors = ["O6lvl4"]
