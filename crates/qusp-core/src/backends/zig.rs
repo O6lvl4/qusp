@@ -212,7 +212,7 @@ impl Backend for ZigBackend {
     fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
         use crate::effects::FarmBinary;
         vec![
-            FarmBinary::unversioned("zig"),
+            FarmBinary::unversioned_flat("zig"),
         ]
     }
 }

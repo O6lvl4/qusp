@@ -65,19 +65,39 @@ pub enum FarmKind {
 }
 
 impl FarmBinary {
-    pub fn versioned(source: impl Into<String>) -> Self {
-        let source = source.into();
+    /// Versioned binary living under `bin/` (e.g. `bin/python3.13`).
+    pub fn versioned(name: impl Into<String>) -> Self {
+        let name = name.into();
         Self {
-            link_name: source.clone(),
-            source,
+            source: format!("bin/{name}"),
+            link_name: name,
             kind: FarmKind::Versioned,
         }
     }
-    pub fn unversioned(source: impl Into<String>) -> Self {
-        let source = source.into();
+    /// Unversioned binary living under `bin/` (e.g. `bin/python`).
+    pub fn unversioned(name: impl Into<String>) -> Self {
+        let name = name.into();
         Self {
-            link_name: source.clone(),
-            source,
+            source: format!("bin/{name}"),
+            link_name: name,
+            kind: FarmKind::Unversioned,
+        }
+    }
+    /// Versioned binary at install root (flat layout, e.g. `zig`).
+    pub fn versioned_flat(name: impl Into<String>) -> Self {
+        let name = name.into();
+        Self {
+            source: name.clone(),
+            link_name: name,
+            kind: FarmKind::Versioned,
+        }
+    }
+    /// Unversioned binary at install root (flat layout, e.g. `zig`).
+    pub fn unversioned_flat(name: impl Into<String>) -> Self {
+        let name = name.into();
+        Self {
+            source: name.clone(),
+            link_name: name,
             kind: FarmKind::Unversioned,
         }
     }
@@ -125,7 +145,7 @@ impl FarmManager {
             if bin.kind == FarmKind::Unversioned && !expose_unversioned {
                 continue;
             }
-            let source = install_dir.join("bin").join(&bin.source);
+            let source = install_dir.join(&bin.source);
             if !source.is_file() && !source.is_symlink() {
                 report.skipped_missing.push(bin.link_name.clone());
                 continue;
