@@ -112,7 +112,18 @@
       "Bash(curl -s http://localhost:12393/)",
       "Bash(curl -sI http://localhost:12393/)",
       "Bash(~/.local/bin/php -v)",
-      "Bash(~/.local/bin/php -m)"
+      "Bash(~/.local/bin/php -m)",
+      "Bash(brew install:*)",
+      "Bash(qusp uninstall:*)",
+      "Bash(rm -f ~/.local/bin/php)",
+      "Bash(curl -fsSL \"https://github.com/O6lvl4/php-build-standalone/releases/download/php-8.4.20/php-8.4.20-aarch64-apple-darwin.tar.gz\" -o /tmp/php.tar.gz)",
+      "Read(//private/tmp/**)",
+      "Bash(tar xzf:*)",
+      "Bash(ffmpeg -version)",
+      "Read(//Users/o6lvl4/workspace/github.com/**)",
+      "Read(//Users/o6lvl4/**)",
+      "Bash(npm run:*)",
+      "Bash(ls /Users/o6lvl4/workspace/github.com/Aid-On/aid-on-platform/apps/aituber-app/dist/*.html)"
     ]
   }
 }
