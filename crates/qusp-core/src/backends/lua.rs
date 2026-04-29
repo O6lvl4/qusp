@@ -251,7 +251,7 @@ impl Backend for LuaBackend {
         if let Some(parent) = prefix.parent() {
             anyv_core::paths::ensure_dir(parent)?;
         }
-        if let Err(_) = std::fs::rename(&staging, &prefix) {
+        if std::fs::rename(&staging, &prefix).is_err() {
             crate::effects::copy_tree(&staging, &prefix)
                 .with_context(|| format!("copy {} → {}", staging.display(), prefix.display()))?;
         }

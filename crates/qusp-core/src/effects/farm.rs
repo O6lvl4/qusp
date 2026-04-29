@@ -108,16 +108,18 @@ pub struct FarmManager {
     pub farm_dir: PathBuf,
 }
 
-impl FarmManager {
+impl Default for FarmManager {
     /// Default farm dir: `$HOME/.local/bin/` — matches XDG and uv
     /// convention. If `HOME` is unset, falls back to `/tmp/qusp-bin`.
-    pub fn default() -> Self {
+    fn default() -> Self {
         let dir = std::env::var_os("HOME")
             .map(|h| PathBuf::from(h).join(".local").join("bin"))
             .unwrap_or_else(|| PathBuf::from("/tmp/qusp-bin"));
         Self { farm_dir: dir }
     }
+}
 
+impl FarmManager {
     pub fn with_dir(dir: PathBuf) -> Self {
         Self { farm_dir: dir }
     }
@@ -192,10 +194,8 @@ impl FarmManager {
             let entry = entry?;
             let path = entry.path();
             if let Some(target) = read_link_target(&path) {
-                if target.starts_with(install_dir) {
-                    if std::fs::remove_file(&path).is_ok() {
-                        removed += 1;
-                    }
+                if target.starts_with(install_dir) && std::fs::remove_file(&path).is_ok() {
+                    removed += 1;
                 }
             }
         }
@@ -409,6 +409,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn foreign_symlink_preserved() {
         // Simulate uv having claimed `python3.13` already.
         let store = tmp_dir("store");
@@ -447,6 +448,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn remove_links_to_cleans_only_qusp_owned() {
         let store = tmp_dir("store");
         let install = store.join("python-3.13");

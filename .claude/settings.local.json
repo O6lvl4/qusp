@@ -39,7 +39,14 @@
       "Bash(grep -r 'use flate2' /Users/o6lvl4/workspace/github.com/O6lvl4/qusp/ --include=*.rs)",
       "Bash(~/.local/bin/elm --version)",
       "Bash(gh run:*)",
-      "Bash(cargo fmt:*)"
+      "Bash(cargo fmt:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo clean:*)",
+      "Bash(rustc --version)",
+      "Bash(rustup show:*)",
+      "Bash(cargo +stable clippy --all-targets)",
+      "Bash(rustup which:*)",
+      "Bash(PATH=\"/Users/o6lvl4/.cargo/bin:$PATH\" cargo clippy --all-targets)"
     ]
   }
 }
