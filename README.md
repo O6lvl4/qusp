@@ -11,10 +11,9 @@ The pitch: **uv-grade quality, every language**, with three usage styles —
 `qusp run`, `mise activate`-style hooks, or a **symlink farm** that makes
 `python`, `cargo`, `node` "just work" system-wide without any shell hook.
 
-The name comes from Greg Egan's *Schild's Ladder*: a **qusp** is a
-quantum-superposition processor. That's what a project's toolchain feels like
-— many candidate versions in superposition, until you `cd` and the manifest
-collapses the wavefunction.
+**qusp** = **Qu**ick **S**tart us **P**rogramming — toolchain setup should
+never be the reason you can't start coding. Install qusp, pick your
+languages, and get writing.
 
 ## Install
 
