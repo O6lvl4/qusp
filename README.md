@@ -3,13 +3,13 @@
 > Every language toolchain in superposition. `cd` collapses to one.
 
 **`qusp` is a multi-language toolchain manager.** One `qusp.toml` describes the
-toolchains a project needs (Go, Ruby, Python, Node, Deno, Bun, Java, Rust);
-qusp resolves and installs them all in parallel, with reproducibility locked
-in `qusp.lock`. Every backend is **native Rust** — no plugin bash, no
-subprocess freeloading on `rustup` / `nvm` / `pyenv`.
+toolchains a project needs; qusp resolves and installs them all in parallel,
+with reproducibility locked in `qusp.lock`. Every backend is **native Rust** —
+no plugin bash, no subprocess freeloading on `rustup` / `nvm` / `pyenv`.
 
-The pitch: **uv-grade quality, every language**, with both `uv run` and
-`mise activate` styles available — pick the one that matches your workflow.
+The pitch: **uv-grade quality, every language**, with three usage styles —
+`qusp run`, `mise activate`-style hooks, or a **symlink farm** that makes
+`python`, `cargo`, `node` "just work" system-wide without any shell hook.
 
 The name comes from Greg Egan's *Schild's Ladder*: a **qusp** is a
 quantum-superposition processor. That's what a project's toolchain feels like
@@ -27,7 +27,7 @@ brew install O6lvl4/tap/qusp
 ### Cargo
 
 ```bash
-cargo install --git https://github.com/O6lvl4/qusp --tag v0.7.0 --bin qusp
+cargo install --git https://github.com/O6lvl4/qusp --tag v0.29.1 --bin qusp
 ```
 
 ### Pre-built binaries
@@ -41,64 +41,99 @@ and `x86_64-pc-windows-msvc`. See [Releases].
 ## 30-second quickstart
 
 ```bash
+# --- per-project workflow ---
 qusp init                            # writes a starter qusp.toml
 qusp install go 1.26.2               # pin one language
 qusp install rust stable             # channel resolution (rustup-compatible)
-qusp install                         # install every language pinned in qusp.toml, in parallel
-
+qusp install                         # install everything in qusp.toml, in parallel
 qusp run go test ./...               # run with the project-pinned toolchain
-qusp run rustc main.rs               # rustc, cargo, rustdoc — all resolved
-qusp add tool gopls                  # routed to the Go backend, sumdb-verified
-qusp add tool tsc                    # routed to Node, npm `dist.integrity` verified
 
-quspx pnpm install                   # ephemeral run via argv[0] dispatch
-qusp sync --frozen                   # reproduce exactly from qusp.lock (CI mode)
-qusp outdated                        # ↑ rust 1.85.0 → 1.95.0
-qusp self-update                     # in-place upgrade, sha256-verified
+# --- system-wide (no shell hook needed) ---
+qusp install python 3.11.13          # install to qusp store
+qusp pin set python 3.11.13          # expose python, pip in ~/.local/bin/
+python --version                     # → Python 3.11.15 (bare command, no activation)
+
+qusp pin list                        # show all global pins
+qusp doctor                          # health check (PATH, VSCode integration, …)
+qusp setup                           # one-time: make GUI apps see qusp tools
 ```
 
-## Two modes, one tool
+## Three modes, one tool
 
-By design, qusp supports two entry-point styles. **Default is uv-style**:
-nothing about your shell changes; everything goes through `qusp run` /
-`quspx`. **Opt-in is mise-style**: a `chpwd` hook injects PATH + GOROOT +
-JAVA_HOME + … so `python`, `go`, `ruby` work at the bare prompt.
+### 1. Symlink farm (recommended for daily use)
+
+`qusp install` + `qusp pin set` places symlinks in `~/.local/bin/` — the
+same model uv uses for `python3.13`. No shim, no shell hook, no overhead.
+Bare commands work everywhere: terminal, scripts, cron, VSCode.
 
 ```bash
-# uv-style (default — global shell never modified)
-$ which python
-/usr/bin/python
+$ qusp install node 22.9.0 && qusp pin set node 22.9.0
+✓ node 22.9.0 installed
+✓ pinned node 22.9.0 globally
+  + farm: node, npm, npx, corepack
+
+$ which node
+~/.local/bin/node
+
+$ node --version
+v22.9.0
+```
+
+Run `qusp setup` once to create `/etc/paths.d/qusp` so that GUI apps
+(VSCode launched from Dock, etc.) also see qusp tools on PATH.
+
+### 2. uv-style (explicit `qusp run`)
+
+Nothing about your shell changes. Everything goes through `qusp run` / `quspx`.
+
+```bash
 $ qusp run python --version
 Python 3.13.0
 
-# mise-style (opt-in — installed once)
-$ eval "$(qusp hook --shell zsh)"  # add to ~/.zshrc
+$ quspx pnpm install                 # ephemeral run via argv[0] dispatch
+```
+
+### 3. mise-style (opt-in shell hook)
+
+A `chpwd` hook injects PATH + GOROOT + JAVA_HOME + … so toolchains
+resolve per-directory, restoring the baseline on `cd` out.
+
+```bash
+$ eval "$(qusp hook --shell zsh)"    # add to ~/.zshrc
 $ cd ~/projects/myapp
 $ which python
 ~/Library/Application Support/dev.O6lvl4.qusp/python/3.13.0/bin/python
 $ cd /tmp
 $ which python
-/usr/bin/python                       # auto-restored on cd-out
+/usr/bin/python                       # auto-restored
 ```
 
 ## Languages
 
-| Backend | Toolchain source | Verification | Tools |
+18 backends, all native Rust:
+
+| Backend | Source | Verification | Tools |
 |---|---|---|---|
 | **go** | go.dev official tarballs | sha256 | full `gv` registry (gopls, golangci-lint, …) |
 | **ruby** | ruby-lang.org via `ruby-build` | sha256 | bundler, rake (via `rv`) |
-| **python** | python-build-standalone | sha256 (SHA256SUMS file) | _via uv routing — coming v0.10_ |
-| **node** | nodejs.org official | sha256 (SHASUMS256.txt) | curated: pnpm, yarn, tsc, prettier |
-| **deno** | denoland/deno releases | sha256 (inner binary) | toolchain only (use deno's own `install`) |
-| **bun** | oven-sh/bun releases | sha256 (SHASUMS256.txt) | toolchain only (use bun's own `install`) |
+| **python** | python-build-standalone | sha256 | — |
+| **node** | nodejs.org official | sha256 | pnpm, yarn, tsc, prettier |
+| **deno** | denoland/deno releases | sha256 | — |
+| **bun** | oven-sh/bun releases | sha256 | — |
 | **java** | Foojay disco API (Temurin/Corretto/Zulu/GraalVM CE) | sha256 | mvn (sha512), gradle (sha256) |
-| **rust** | static.rust-lang.org (rustup CDN) | sha256 | use `cargo install` / `cargo binstall` |
-| **kotlin** | JetBrains/kotlin GitHub releases | sha256 | toolchain only (Gradle drives plugins). **requires `[java]`** |
+| **rust** | static.rust-lang.org | sha256 | — |
+| **kotlin** | JetBrains/kotlin releases | sha256 | — (requires `[java]`) |
+| **scala** | Coursier | sha256 | — |
+| **groovy** | Apache Groovy releases | sha256 | — |
+| **clojure** | Clojure releases | sha256 | — |
+| **zig** | ziglang.org releases | sha256 | — |
+| **julia** | julialang.org releases | sha256 | — |
+| **crystal** | crystal-lang.org releases | sha256 | — |
+| **dart** | dart.dev releases | sha256 | — |
+| **lua** | lua.org source (compiled locally) | sha256 | — |
+| **haskell** | GHCup releases | sha256 | — |
 
 Every install **verifies a publisher-published hash** before extracting.
-Java's checksums come from Foojay's normalized API; Maven's are sha512;
-Node's npm tools are verified against `dist.integrity` (sha512 base64).
-qusp autodetects sha256 vs sha512 by hex-length.
 
 ### Multi-vendor (Java)
 
@@ -108,23 +143,21 @@ version = "21"
 distribution = "temurin"           # or "corretto" | "zulu" | "graalvm_community"
 ```
 
-Resolution goes through Foojay disco, the same registry SDKMAN uses, so
-every distribution publishes through one normalized API. qusp downloads
-straight from the publisher's CDN.
+Resolution goes through Foojay disco, the same registry SDKMAN uses.
+`qusp pin set java 21` auto-detects the installed distribution.
 
 ## How it differs
 
 | | mise / asdf | proto | uv (Python) | sdkman | devbox / Nix | **qusp** |
 |---|---|---|---|---|---|---|
-| Languages | 100+ via plugins | ~15 | 1 | JVM only | unlimited via Nix | 8 native |
-| Plugin model | bash plugins | Rust | n/a | bash | derivations | none — every backend is native Rust |
+| Languages | 100+ via plugins | ~15 | 1 | JVM only | unlimited via Nix | 18 native |
+| Plugin model | bash plugins | Rust | n/a | bash | derivations | none — native Rust |
 | Hash verification | varies | varies | strict | sha256 | derivation | **strict, every install** |
-| Subprocess freeloading | yes (system tools) | partial | none | yes | none | **none** |
+| Subprocess freeloading | yes | partial | none | yes | none | **none** |
 | Per-vendor (Java) | plugin per vendor | n/a | n/a | curated | per-derivation | **first-class via Foojay** |
-| `run` vs `shellenv` | shellenv only | shim | run only | shellenv | shell-direct | **both, opt-in shellenv** |
+| Bare commands | shim or shellenv | shim | symlink farm | shellenv | shell-direct | **symlink farm** |
 | Lockfile | partial | partial | yes | no | flake.lock | yes (`qusp.lock`) |
 | Reproducibility | partial | partial | uv.lock | low | high | **lockfile + content-addressed store** |
-| OS-lib reproducibility | × | × | × | × | ✓ | × (out of scope — use Nix) |
 
 **qusp's lane**: deeper than mise/asdf (no plugins, native everywhere,
 strict hash verification), broader than uv (every language, not just
@@ -134,8 +167,7 @@ trying to replace Nix for OS-library reproducibility.
 ### Latency
 
 `scripts/bench.sh` measures invocation cost via [hyperfine] on
-macOS-13 x86_64. Both qusp and mise have go 1.26.2 installed locally;
-the project pins it through each manager's manifest.
+macOS-13 x86_64.
 
 [hyperfine]: https://github.com/sharkdp/hyperfine
 
@@ -143,21 +175,15 @@ the project pins it through each manager's manifest.
 |---|---|---|
 | `qusp run go version` | **12.0 ms** | 9 ms |
 | `mise exec go version` | 12.1 ms | 9 ms |
-| `mise shim go version` (default activated mode) | 49.4 ms | 39 ms |
+| `mise shim go version` (default) | 49.4 ms | 39 ms |
+| `~/.local/bin/go version` (qusp farm) | **~1 ms** | <1 ms |
 
-**qusp run** is statistically tied with `mise exec`. mise's **shim
-mode** — the default users hit when `mise activate` is in their
-rcfile — is **~4× slower** because every command goes through a
-binary wrapper that re-resolves the toolchain.
-
-qusp doesn't have a shim layer. `qusp run` resolves and execs the
-toolchain binary directly; `eval "$(qusp shellenv)"` puts the
-toolchain bin/ on PATH so bare `go version` from the prompt is
-literally just exec'ing the qusp-managed binary.
+The farm approach is the fastest — it's a direct symlink, no resolution
+step at all.
 
 ## Architecture
 
-- `qusp-core` — `Backend` trait, manifest, lock, orchestrator
+- `qusp-core` — `Backend` trait, manifest, lock, orchestrator, symlink farm
 - `qusp-cli` — argv[0] dispatch (`qusp` vs `quspx`), command surface
 - Substrate: [`anyv-core`](https://github.com/O6lvl4/anyv-core) (paths,
   extract, sha verification, presentation, self-update)
@@ -178,28 +204,28 @@ and design decisions.
 
 - A package manager. It manages toolchains, not Maven/npm/PyPI artifacts.
 - A reproducible-OS environment manager. Use Nix or devbox for that.
-- A plugin platform. The strength is curated quality across 8 languages.
+- A plugin platform. The strength is curated quality across 18 languages.
 - A drop-in replacement for `cargo install` / `npm install -g` / `gem install`
   / `pip install`. Tools that have peer-dep complexity are intentionally
   not in qusp's curated registries.
 
 ## Status
 
-- **v0.7.0** ships 8 languages, init/outdated/self-update, 5-target release matrix.
-- Tested on macos-13 x86_64 (manual), CI verifies macos-14 arm64 + ubuntu-latest + windows-latest builds.
-- Documentation incomplete; this README is the source of truth.
+**v0.29.1** — 18 languages, symlink farm, global pins, VSCode/GUI integration.
+
+- Symlink farm: `qusp install` + `qusp pin set` exposes bare commands in `~/.local/bin/`
+- Global pins: per-language version control for unversioned bare commands
+- `qusp setup`: one-time `/etc/paths.d/qusp` for GUI app visibility
+- `qusp doctor`: health check with PATH, pins, and integration diagnostics
+- Content-addressed store with strict hash verification on every install
+- Tested on macOS x86_64 (daily dogfood), CI on macOS arm64 + Linux + Windows
 
 ## Roadmap
 
-- **v0.8.0** — Kotlin backend with `Backend::requires` mechanism
-  (the first cross-backend dependency). Scala via Coursier.
-- **v0.9.0** — Python tool routing through `uv tool install`. Tool
-  registry expansion across Node + Java.
-- **v1.0.0** — sigstore signature verification, sbom export,
-  reproducibility audit. Enough commands stable to declare an API
-  freeze.
-- **Later** — Nix L1/L2/L3 interop (read flake.nix → use as resolution
-  source → `qusp export nix` to flake.nix).
+- **v0.30** — `qusp uninstall` auto-cleans farm links, `qusp doctor` shows
+  farm status (linked / foreign / orphan)
+- **v1.0** — API freeze, sigstore signature verification, sbom export
+- **Later** — Nix L1/L2/L3 interop
 
 ## Contributing
 
