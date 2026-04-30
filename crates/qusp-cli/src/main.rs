@@ -18,8 +18,8 @@ use anyhow::Result;
 use anyv_core::presentation::set_quiet;
 use clap::{Parser, Subcommand};
 use qusp_core::backends;
-use qusp_core::registry::BackendRegistry;
 use qusp_core::paths;
+use qusp_core::registry::BackendRegistry;
 
 mod cmd;
 mod output;
@@ -177,7 +177,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
 
     match cli.cmd {
         Cmd::Backends => cmd::query::cmd_backends(&registry, fmt),
-        Cmd::Install { lang, version } => cmd::install::cmd_install(&registry, &paths, lang, version).await,
+        Cmd::Install { lang, version } => {
+            cmd::install::cmd_install(&registry, &paths, lang, version).await
+        }
         Cmd::Sync { frozen } => cmd::install::cmd_sync(&registry, &paths, frozen).await,
         Cmd::Add { target } => match target {
             AddCmd::Tool { spec } => cmd::install::cmd_add_tool(&registry, &paths, &spec).await,
@@ -189,7 +191,9 @@ async fn run(cli: Cli) -> Result<ExitCode> {
         Cmd::Init { langs, force } => cmd::admin::cmd_init(&registry, langs, force),
         Cmd::Outdated => cmd::query::cmd_outdated(&registry, fmt).await,
         Cmd::SelfUpdate { check } => cmd::admin::cmd_self_update(check).await,
-        Cmd::List { lang, remote } => cmd::query::cmd_list(&registry, &paths, &lang, remote, fmt).await,
+        Cmd::List { lang, remote } => {
+            cmd::query::cmd_list(&registry, &paths, &lang, remote, fmt).await
+        }
         Cmd::Current { lang } => cmd::query::cmd_current(&registry, lang.as_deref(), fmt).await,
         Cmd::Tree => cmd::query::cmd_tree(&registry, &paths).await,
         Cmd::Doctor => cmd::admin::cmd_doctor(&registry, &paths, fmt),

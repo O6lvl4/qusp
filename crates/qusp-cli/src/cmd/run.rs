@@ -31,7 +31,9 @@ fn backfill_lock_from_manifest(lock: &mut lock::Lock, root: Option<&std::path::P
     let Some(root) = root else { return };
     let Ok(m) = manifest::load(root) else { return };
     for (lang, sec) in &m.languages {
-        let Some(v) = sec.version.clone() else { continue };
+        let Some(v) = sec.version.clone() else {
+            continue;
+        };
         let entry = lock.backends.entry(lang.clone()).or_default();
         if entry.version.is_empty() {
             entry.version = v;

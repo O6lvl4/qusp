@@ -1,7 +1,5 @@
 use anyhow::{anyhow, Result};
-use anyv_core::presentation::{
-    bold as color_bold, cyan as color_cyan, dim, spinner,
-};
+use anyv_core::presentation::{bold as color_bold, cyan as color_cyan, dim, spinner};
 use anyv_core::say;
 use qusp_core::registry::BackendRegistry;
 use qusp_core::{lock, manifest};
@@ -102,16 +100,28 @@ pub async fn cmd_tree(r: &BackendRegistry, paths: &qusp_core::Paths) -> Result<E
 
 fn print_tree_manifest(project_root: Option<&std::path::Path>) {
     let Some(root) = project_root else {
-        println!("├── {} {}", color_cyan("manifest"), dim("(no qusp.toml in this tree)"));
+        println!(
+            "├── {} {}",
+            color_cyan("manifest"),
+            dim("(no qusp.toml in this tree)")
+        );
         return;
     };
     let m = manifest::load(root).unwrap_or_default();
     let _ = lock::Lock::load(root);
     if m.languages.is_empty() {
-        println!("├── {} {}", color_cyan("manifest"), dim("(qusp.toml is empty)"));
+        println!(
+            "├── {} {}",
+            color_cyan("manifest"),
+            dim("(qusp.toml is empty)")
+        );
         return;
     }
-    println!("├── {} {}", color_cyan("manifest"), root.join("qusp.toml").display());
+    println!(
+        "├── {} {}",
+        color_cyan("manifest"),
+        root.join("qusp.toml").display()
+    );
     for (lang, sec) in &m.languages {
         let v = sec.version.as_deref().unwrap_or("(no version)");
         println!("│   ├── {} = {}", lang, color_bold(v));
@@ -125,7 +135,11 @@ async fn print_tree_resolution(r: &BackendRegistry, cwd: &std::path::Path) -> Re
     println!("└── {} per-language detection", color_cyan("resolution"));
     let last_id = r.ids().last();
     for (id, backend) in r.iter() {
-        let prefix = if Some(id) == last_id { "    └──" } else { "    ├──" };
+        let prefix = if Some(id) == last_id {
+            "    └──"
+        } else {
+            "    ├──"
+        };
         match backend.detect_version(cwd).await? {
             Some(d) => println!(
                 "{prefix} {} {} {}",

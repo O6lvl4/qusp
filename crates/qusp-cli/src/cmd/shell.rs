@@ -132,10 +132,7 @@ fn emit_posix(
 ) -> String {
     let mut out = String::new();
     if !path_str.is_empty() {
-        out.push_str(&format!(
-            "export PATH={}:$PATH\n",
-            sh_quote_posix(path_str)
-        ));
+        out.push_str(&format!("export PATH={}:$PATH\n", sh_quote_posix(path_str)));
     }
     for (k, v) in env {
         out.push_str(&format!("export {k}={}\n", sh_quote_posix(v)));

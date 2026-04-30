@@ -54,10 +54,13 @@ fn pin_set(
         .get(lang)
         .ok_or_else(|| anyhow!("unknown language: {lang}"))?;
     let installed = backend.list_installed(paths).unwrap_or_default();
-    let resolved = installed.iter().find(|v| v.as_str() == version).or_else(|| {
-        let suffix = format!("-{version}");
-        installed.iter().find(|v| v.ends_with(&suffix))
-    });
+    let resolved = installed
+        .iter()
+        .find(|v| v.as_str() == version)
+        .or_else(|| {
+            let suffix = format!("-{version}");
+            installed.iter().find(|v| v.ends_with(&suffix))
+        });
     let resolved = match resolved {
         Some(v) => v.clone(),
         None => bail!(
@@ -91,10 +94,7 @@ fn refresh_farm_links(
     if bins.is_empty() {
         return;
     }
-    let install_dir = paths
-        .data
-        .join(backend.id())
-        .join(resolved);
+    let install_dir = paths.data.join(backend.id()).join(resolved);
     if !install_dir.exists() {
         return;
     }

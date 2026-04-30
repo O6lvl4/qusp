@@ -104,7 +104,13 @@ impl<'a> Orchestrator<'a> {
                 Ok(report) => {
                     if !report.already_present {
                         Self::materialize_farm(
-                            self.registry, &lang, &version, &report, &global_pins, &farm, &store_root,
+                            self.registry,
+                            &lang,
+                            &version,
+                            &report,
+                            &global_pins,
+                            &farm,
+                            &store_root,
                         );
                     }
                     installed.push(InstallSummary {
@@ -273,12 +279,17 @@ impl<'a> Orchestrator<'a> {
         farm: &crate::effects::FarmManager,
         store_root: &std::path::Path,
     ) {
-        let Some(backend) = registry.get(lang) else { return };
+        let Some(backend) = registry.get(lang) else {
+            return;
+        };
         let bins = backend.farm_binaries(version);
         if bins.is_empty() {
             return;
         }
-        let pin_matches = global_pins.get(lang).map(|p| p.version == version).unwrap_or(false);
+        let pin_matches = global_pins
+            .get(lang)
+            .map(|p| p.version == version)
+            .unwrap_or(false);
         if let Err(e) = farm.install_links(&report.install_dir, &bins, pin_matches, store_root) {
             tracing::warn!("farm: link install failed for {lang} {version}: {e:#}");
         }
@@ -398,8 +409,12 @@ impl<'a> Orchestrator<'a> {
         cwd: &Path,
         merged: &mut crate::backend::RunEnv,
     ) -> Result<()> {
-        let Some(backend) = self.registry.get(lang) else { return Ok(()) };
-        let Some(entry) = lock.backends.get(lang) else { return Ok(()) };
+        let Some(backend) = self.registry.get(lang) else {
+            return Ok(());
+        };
+        let Some(entry) = lock.backends.get(lang) else {
+            return Ok(());
+        };
         if entry.version.is_empty() {
             return Ok(());
         }

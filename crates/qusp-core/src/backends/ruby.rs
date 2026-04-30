@@ -54,7 +54,6 @@ impl Backend for RubyBackend {
         version: &str,
         _ctx: &crate::backend::InstallCtx<'_>,
     ) -> Result<InstallReport> {
-
         let paths = rv_core::paths::discover()?;
         paths.ensure_dirs()?;
         let report = tokio::task::spawn_blocking({

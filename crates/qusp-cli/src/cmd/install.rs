@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Result};
 use anyv_core::presentation::{
-    bold as color_bold, cyan as color_cyan, dim, format_duration_ms, green as color_green,
-    spinner, success_mark, yellow as color_yellow,
+    bold as color_bold, cyan as color_cyan, dim, format_duration_ms, green as color_green, spinner,
+    success_mark, yellow as color_yellow,
 };
 use anyv_core::say;
 use qusp_core::registry::BackendRegistry;
@@ -92,7 +92,10 @@ fn materialize_farm(
                 );
             }
             for (link, target) in &r.skipped_foreign {
-                eprintln!("  {} farm: skipped {link} (held by {target})", color_yellow("!"));
+                eprintln!(
+                    "  {} farm: skipped {link} (held by {target})",
+                    color_yellow("!")
+                );
             }
         }
         Err(e) => eprintln!("  {} farm: link install failed: {e:#}", color_yellow("!")),
@@ -171,7 +174,11 @@ fn print_install_summary(
         } else {
             (color_green("+"), dim("(installed)"))
         };
-        println!(" {mark} {} {} {note}", color_cyan(&s.lang), color_bold(&s.version));
+        println!(
+            " {mark} {} {} {note}",
+            color_cyan(&s.lang),
+            color_bold(&s.version)
+        );
     }
     if !result.failed.is_empty() {
         eprintln!();
@@ -208,7 +215,11 @@ pub async fn cmd_sync(
     print_sync_summary(&summary, elapsed);
     if !frozen {
         lock.save(&root)?;
-        say!("{} wrote {}", success_mark(), root.join("qusp.lock").display());
+        say!(
+            "{} wrote {}",
+            success_mark(),
+            root.join("qusp.lock").display()
+        );
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -218,13 +229,25 @@ fn print_sync_summary(summary: &qusp_core::orchestrator::SyncSummary, elapsed: u
         "{} Synced {} toolchain{} + {} tool{} in {}",
         success_mark(),
         summary.langs_installed.len(),
-        if summary.langs_installed.len() == 1 { "" } else { "s" },
+        if summary.langs_installed.len() == 1 {
+            ""
+        } else {
+            "s"
+        },
         summary.tools_installed.len(),
-        if summary.tools_installed.len() == 1 { "" } else { "s" },
+        if summary.tools_installed.len() == 1 {
+            ""
+        } else {
+            "s"
+        },
         format_duration_ms(elapsed)
     );
     for s in &summary.langs_installed {
-        let mark = if s.already_present { dim("=") } else { color_green("+") };
+        let mark = if s.already_present {
+            dim("=")
+        } else {
+            color_green("+")
+        };
         println!(" {mark} {} {}", color_cyan(&s.lang), color_bold(&s.version));
     }
     for (lang, locked) in &summary.tools_installed {
@@ -241,7 +264,11 @@ fn print_sync_summary(summary: &qusp_core::orchestrator::SyncSummary, elapsed: u
             " {} pruned {} stale lock entr{}",
             dim("-"),
             summary.tools_removed_from_lock,
-            if summary.tools_removed_from_lock == 1 { "y" } else { "ies" }
+            if summary.tools_removed_from_lock == 1 {
+                "y"
+            } else {
+                "ies"
+            }
         );
     }
     if !summary.langs_failed.is_empty() {
@@ -250,7 +277,11 @@ fn print_sync_summary(summary: &qusp_core::orchestrator::SyncSummary, elapsed: u
             "{} {} toolchain{} failed (other backends still installed):",
             color_yellow("!"),
             summary.langs_failed.len(),
-            if summary.langs_failed.len() == 1 { "" } else { "s" }
+            if summary.langs_failed.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
         );
         for (lang, err) in &summary.langs_failed {
             eprintln!("  {} {}: {}", color_yellow("✗"), color_cyan(lang), err);

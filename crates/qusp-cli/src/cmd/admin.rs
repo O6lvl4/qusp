@@ -59,7 +59,10 @@ pub fn cmd_init(r: &BackendRegistry, langs: Option<Vec<String>>, force: bool) ->
         out.push_str("# Examples (uncomment + adjust):\n");
         for id in r.ids() {
             out.push_str(&format!("# [{id}]\n"));
-            out.push_str(&format!("# version = \"{}\"\n", default_example_version(id)));
+            out.push_str(&format!(
+                "# version = \"{}\"\n",
+                default_example_version(id)
+            ));
             if id == "java" {
                 out.push_str("# distribution = \"temurin\"\n");
             }

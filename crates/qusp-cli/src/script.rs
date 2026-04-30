@@ -37,15 +37,29 @@ use qusp_core::{manifest, Paths};
 /// Map a file's extension to a qusp language id. None means "no
 /// extension match" — caller falls through to existing tool dispatch.
 const EXT_TO_LANG: &[(&str, &str)] = &[
-    ("py", "python"), ("pyi", "python"),
-    ("lua", "lua"), ("rb", "ruby"), ("jl", "julia"), ("groovy", "groovy"),
-    ("java", "java"), ("kts", "kotlin"),
-    ("scala", "scala"), ("sc", "scala"),
-    ("clj", "clojure"), ("cljc", "clojure"),
+    ("py", "python"),
+    ("pyi", "python"),
+    ("lua", "lua"),
+    ("rb", "ruby"),
+    ("jl", "julia"),
+    ("groovy", "groovy"),
+    ("java", "java"),
+    ("kts", "kotlin"),
+    ("scala", "scala"),
+    ("sc", "scala"),
+    ("clj", "clojure"),
+    ("cljc", "clojure"),
     ("hs", "haskell"),
-    ("js", "node"), ("mjs", "node"), ("cjs", "node"),
-    ("ts", "deno"), ("mts", "deno"), ("cts", "deno"),
-    ("go", "go"), ("zig", "zig"), ("dart", "dart"), ("cr", "crystal"),
+    ("js", "node"),
+    ("mjs", "node"),
+    ("cjs", "node"),
+    ("ts", "deno"),
+    ("mts", "deno"),
+    ("cts", "deno"),
+    ("go", "go"),
+    ("zig", "zig"),
+    ("dart", "dart"),
+    ("cr", "crystal"),
 ];
 
 pub fn extension_to_lang(path: &Path) -> Option<&'static str> {
@@ -57,13 +71,21 @@ pub fn extension_to_lang(path: &Path) -> Option<&'static str> {
 /// against a pinned-and-installed toolchain. Convention is matched to
 /// each language's idiomatic single-file run command.
 const SCRIPT_ARGV_PREFIX: &[(&str, &[&str])] = &[
-    ("python", &["python"]), ("lua", &["lua"]), ("ruby", &["ruby"]),
-    ("node", &["node"]), ("deno", &["deno", "run"]),
-    ("go", &["go", "run"]), ("java", &["java"]),
-    ("kotlin", &["kotlin", "-script"]), ("scala", &["scala"]),
-    ("clojure", &["clojure"]), ("haskell", &["runghc"]),
-    ("zig", &["zig", "run"]), ("dart", &["dart", "run"]),
-    ("crystal", &["crystal", "run"]), ("julia", &["julia"]),
+    ("python", &["python"]),
+    ("lua", &["lua"]),
+    ("ruby", &["ruby"]),
+    ("node", &["node"]),
+    ("deno", &["deno", "run"]),
+    ("go", &["go", "run"]),
+    ("java", &["java"]),
+    ("kotlin", &["kotlin", "-script"]),
+    ("scala", &["scala"]),
+    ("clojure", &["clojure"]),
+    ("haskell", &["runghc"]),
+    ("zig", &["zig", "run"]),
+    ("dart", &["dart", "run"]),
+    ("crystal", &["crystal", "run"]),
+    ("julia", &["julia"]),
     ("groovy", &["groovy"]),
 ];
 
@@ -85,16 +107,31 @@ pub fn script_run_argv(lang: &str, script: &Path) -> Result<Vec<String>> {
 /// hello.lua` and a fresh `qusp init --langs=lua` agree on what
 /// "latest reasonable" means at this qusp release.
 const DEFAULT_VERSIONS: &[(&str, &str)] = &[
-    ("go", "1.26.2"), ("ruby", "3.4.7"), ("python", "3.14.4"),
-    ("node", "22.9.0"), ("deno", "2.7.14"), ("bun", "1.3.13"),
-    ("java", "21"), ("kotlin", "2.3.21"), ("rust", "1.95.0"),
-    ("zig", "0.16.0"), ("julia", "1.12.6"), ("crystal", "1.20.0"),
-    ("groovy", "4.0.22"), ("dart", "3.5.4"), ("scala", "3.8.3"),
-    ("clojure", "1.12.4.1618"), ("lua", "5.4.7"), ("haskell", "9.10.1"),
+    ("go", "1.26.2"),
+    ("ruby", "3.4.7"),
+    ("python", "3.14.4"),
+    ("node", "22.9.0"),
+    ("deno", "2.7.14"),
+    ("bun", "1.3.13"),
+    ("java", "21"),
+    ("kotlin", "2.3.21"),
+    ("rust", "1.95.0"),
+    ("zig", "0.16.0"),
+    ("julia", "1.12.6"),
+    ("crystal", "1.20.0"),
+    ("groovy", "4.0.22"),
+    ("dart", "3.5.4"),
+    ("scala", "3.8.3"),
+    ("clojure", "1.12.4.1618"),
+    ("lua", "5.4.7"),
+    ("haskell", "9.10.1"),
 ];
 
 pub fn default_version(lang: &str) -> Option<&'static str> {
-    DEFAULT_VERSIONS.iter().find(|(l, _)| *l == lang).map(|(_, v)| *v)
+    DEFAULT_VERSIONS
+        .iter()
+        .find(|(l, _)| *l == lang)
+        .map(|(_, v)| *v)
 }
 
 /// Outcome of inspecting argv[0] for `qusp x` script-routing.
