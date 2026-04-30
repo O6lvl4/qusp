@@ -99,10 +99,10 @@ impl Backend for RustBackend {
         &self,
         _: &AnyvPaths,
         version: &str,
-        _opts: &InstallOpts,
-        http: &dyn crate::effects::HttpFetcher,
-        _progress: &dyn crate::effects::ProgressReporter,
+        ctx: &crate::backend::InstallCtx<'_>,
     ) -> Result<InstallReport> {
+        let http = ctx.http;
+
         let paths = paths()?;
         paths.ensure_dirs()?;
         let install_dir = rust_root(&paths, version);

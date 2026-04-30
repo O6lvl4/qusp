@@ -83,9 +83,12 @@ impl<'a> Orchestrator<'a> {
                 let http = LiveHttp::new(concat!("qusp/", env!("CARGO_PKG_VERSION")))
                     .expect("LiveHttp build cannot fail with default reqwest config");
                 let progress = crate::effects::LiveProgress::new();
-                let result = backend
-                    .install(&paths, &version, &opts, &http, &progress)
-                    .await;
+                let ctx = crate::backend::InstallCtx {
+                    opts: &opts,
+                    http: &http,
+                    progress: &progress,
+                };
+                let result = backend.install(&paths, &version, &ctx).await;
                 (lang, version, result)
             });
         }
@@ -99,32 +102,10 @@ impl<'a> Orchestrator<'a> {
         for (lang, version, result) in outcomes {
             match result {
                 Ok(report) => {
-                    // Materialise farm symlinks. Versioned binaries
-                    // unconditionally; unversioned only when the user's
-                    // global pin says this version is the bare-command
-                    // owner. Failures are non-fatal — the install
-                    // succeeded, the farm is a UX add-on.
                     if !report.already_present {
-                        let backend = self.registry.get(&lang);
-                        if let Some(backend) = backend {
-                            let bins = backend.farm_binaries(&version);
-                            if !bins.is_empty() {
-                                let pin_matches = global_pins
-                                    .get(&lang)
-                                    .map(|p| p.version == version)
-                                    .unwrap_or(false);
-                                if let Err(e) = farm.install_links(
-                                    &report.install_dir,
-                                    &bins,
-                                    pin_matches,
-                                    &store_root,
-                                ) {
-                                    tracing::warn!(
-                                        "farm: link install failed for {lang} {version}: {e:#}"
-                                    );
-                                }
-                            }
-                        }
+                        Self::materialize_farm(
+                            self.registry, &lang, &version, &report, &global_pins, &farm, &store_root,
+                        );
                     }
                     installed.push(InstallSummary {
                         lang,
@@ -283,6 +264,26 @@ impl<'a> Orchestrator<'a> {
         Ok(installed)
     }
 
+    fn materialize_farm(
+        registry: &BackendRegistry,
+        lang: &str,
+        version: &str,
+        report: &crate::backend::InstallReport,
+        global_pins: &crate::effects::GlobalPins,
+        farm: &crate::effects::FarmManager,
+        store_root: &std::path::Path,
+    ) {
+        let Some(backend) = registry.get(lang) else { return };
+        let bins = backend.farm_binaries(version);
+        if bins.is_empty() {
+            return;
+        }
+        let pin_matches = global_pins.get(lang).map(|p| p.version == version).unwrap_or(false);
+        if let Err(e) = farm.install_links(&report.install_dir, &bins, pin_matches, store_root) {
+            tracing::warn!("farm: link install failed for {lang} {version}: {e:#}");
+        }
+    }
+
     /// Route a tool name to whichever backend's static registry knows it.
     /// Returns `(language_id, backend)`.
     pub fn route_tool(&self, name: &str) -> Result<(String, Arc<dyn Backend>)> {
@@ -372,35 +373,39 @@ impl<'a> Orchestrator<'a> {
         prefer_lang: Option<&str>,
     ) -> Result<crate::backend::RunEnv> {
         let mut merged = crate::backend::RunEnv::default();
-        let order: Vec<String> = if let Some(p) = prefer_lang {
-            let mut o: Vec<String> = vec![p.to_string()];
-            for id in self.registry.ids() {
-                if id != p {
-                    o.push(id.to_string());
-                }
-            }
-            o
-        } else {
-            self.registry.ids().map(String::from).collect()
-        };
-        for lang in order {
-            let Some(backend) = self.registry.get(&lang) else {
-                continue;
-            };
-            let Some(entry) = lock.backends.get(&lang) else {
-                continue;
-            };
-            if entry.version.is_empty() {
-                continue;
-            }
-            let env = backend.build_run_env(self.paths, &entry.version, cwd)?;
-            for p in env.path_prepend {
-                merged.path_prepend.push(p);
-            }
-            for (k, v) in env.env {
-                merged.env.insert(k, v);
-            }
+        let order = self.lang_order(prefer_lang);
+        for lang in &order {
+            self.merge_backend_env(lock, lang, cwd, &mut merged)?;
         }
         Ok(merged)
+    }
+
+    fn lang_order(&self, prefer: Option<&str>) -> Vec<String> {
+        match prefer {
+            Some(p) => {
+                let mut o = vec![p.to_string()];
+                o.extend(self.registry.ids().filter(|id| *id != p).map(String::from));
+                o
+            }
+            None => self.registry.ids().map(String::from).collect(),
+        }
+    }
+
+    fn merge_backend_env(
+        &self,
+        lock: &Lock,
+        lang: &str,
+        cwd: &Path,
+        merged: &mut crate::backend::RunEnv,
+    ) -> Result<()> {
+        let Some(backend) = self.registry.get(lang) else { return Ok(()) };
+        let Some(entry) = lock.backends.get(lang) else { return Ok(()) };
+        if entry.version.is_empty() {
+            return Ok(());
+        }
+        let env = backend.build_run_env(self.paths, &entry.version, cwd)?;
+        merged.path_prepend.extend(env.path_prepend);
+        merged.env.extend(env.env);
+        Ok(())
     }
 }

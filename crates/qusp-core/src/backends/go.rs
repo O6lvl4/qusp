@@ -54,10 +54,10 @@ impl Backend for GoBackend {
         &self,
         _qusp_paths: &AnyvPaths,
         version: &str,
-        _opts: &InstallOpts,
-        http: &dyn crate::effects::HttpFetcher,
-        _progress: &dyn crate::effects::ProgressReporter,
+        ctx: &crate::backend::InstallCtx<'_>,
     ) -> Result<InstallReport> {
+        let http = ctx.http;
+
         let paths = gv_core::paths::discover()?;
         paths.ensure_dirs()?;
         let client = require_reqwest(http)?;

@@ -52,10 +52,9 @@ impl Backend for RubyBackend {
         &self,
         _qusp_paths: &AnyvPaths,
         version: &str,
-        _opts: &InstallOpts,
-        _http: &dyn crate::effects::HttpFetcher,
-        _progress: &dyn crate::effects::ProgressReporter,
+        _ctx: &crate::backend::InstallCtx<'_>,
     ) -> Result<InstallReport> {
+
         let paths = rv_core::paths::discover()?;
         paths.ensure_dirs()?;
         let report = tokio::task::spawn_blocking({

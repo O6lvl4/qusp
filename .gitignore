@@ -5,3 +5,5 @@
 .vscode/
 *.swp
 .claude/
+codopsy-report.json
+.codopsyrc.json

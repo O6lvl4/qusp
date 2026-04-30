@@ -40,6 +40,14 @@ pub struct InstallOpts {
     pub distribution: Option<String>,
 }
 
+/// Context bundle for [`Backend::install`], grouping the three effect
+/// handles that every backend receives but few use simultaneously.
+pub struct InstallCtx<'a> {
+    pub opts: &'a InstallOpts,
+    pub http: &'a dyn HttpFetcher,
+    pub progress: &'a dyn ProgressReporter,
+}
+
 /// User-facing tool spec from `qusp.toml`. Either `"latest"`, an exact
 /// version, or a constraint (`^v0.18`, `~1.64`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,9 +163,7 @@ pub trait Backend: Send + Sync {
         &self,
         paths: &Paths,
         version: &str,
-        opts: &InstallOpts,
-        http: &dyn HttpFetcher,
-        progress: &dyn ProgressReporter,
+        ctx: &InstallCtx<'_>,
     ) -> Result<InstallReport>;
 
     /// Drop a toolchain version (does not touch tool installs that

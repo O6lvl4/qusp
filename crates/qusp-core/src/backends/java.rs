@@ -158,10 +158,12 @@ impl Backend for JavaBackend {
         &self,
         _qusp_paths: &AnyvPaths,
         version: &str,
-        opts: &InstallOpts,
-        http: &dyn crate::effects::HttpFetcher,
-        progress: &dyn crate::effects::ProgressReporter,
+        ctx: &crate::backend::InstallCtx<'_>,
     ) -> Result<InstallReport> {
+        let opts = ctx.opts;
+        let http = ctx.http;
+        let progress = ctx.progress;
+
         let paths = paths()?;
         paths.ensure_dirs()?;
         let distribution = opts

@@ -36,93 +36,65 @@ use qusp_core::{manifest, Paths};
 
 /// Map a file's extension to a qusp language id. None means "no
 /// extension match" — caller falls through to existing tool dispatch.
+const EXT_TO_LANG: &[(&str, &str)] = &[
+    ("py", "python"), ("pyi", "python"),
+    ("lua", "lua"), ("rb", "ruby"), ("jl", "julia"), ("groovy", "groovy"),
+    ("java", "java"), ("kts", "kotlin"),
+    ("scala", "scala"), ("sc", "scala"),
+    ("clj", "clojure"), ("cljc", "clojure"),
+    ("hs", "haskell"),
+    ("js", "node"), ("mjs", "node"), ("cjs", "node"),
+    ("ts", "deno"), ("mts", "deno"), ("cts", "deno"),
+    ("go", "go"), ("zig", "zig"), ("dart", "dart"), ("cr", "crystal"),
+];
+
 pub fn extension_to_lang(path: &Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    Some(match ext.as_str() {
-        // Single-source-file scripting languages.
-        "py" | "pyi" => "python",
-        "lua" => "lua",
-        "rb" => "ruby",
-        "jl" => "julia",
-        "groovy" => "groovy",
-
-        // Source files that ship with a runnable single-file launcher.
-        "java" => "java",            // `java Hello.java` (JEP 330, JDK 21+)
-        "kts" => "kotlin",           // `kotlin -script Hello.kts`
-        "scala" | "sc" => "scala",   // `scala Hello.scala` (3.5+ ships scala-cli)
-        "clj" | "cljc" => "clojure", // `clojure Hello.clj`
-        "hs" => "haskell",           // `runghc Hello.hs`
-
-        // JS/TS — choose the simplest defaults; .ts → deno (built-in
-        // TypeScript), .js → node (broadest ecosystem). Bun overlaps
-        // both; users who want bun pin it via shebang or qusp.toml.
-        "js" | "mjs" | "cjs" => "node",
-        "ts" | "mts" | "cts" => "deno",
-
-        // Compiled-with-`run`-subcommand languages — they all ship a
-        // `<lang> run <file>` mode that compiles + executes
-        // transparently for one-shot use.
-        "go" => "go",
-        "zig" => "zig",
-        "dart" => "dart",
-        "cr" => "crystal",
-
-        _ => None?,
-    })
+    EXT_TO_LANG.iter().find(|(e, _)| *e == ext).map(|(_, l)| *l)
 }
 
 /// The argv (program + args) qusp uses to launch a single script
 /// against a pinned-and-installed toolchain. Convention is matched to
 /// each language's idiomatic single-file run command.
+const SCRIPT_ARGV_PREFIX: &[(&str, &[&str])] = &[
+    ("python", &["python"]), ("lua", &["lua"]), ("ruby", &["ruby"]),
+    ("node", &["node"]), ("deno", &["deno", "run"]),
+    ("go", &["go", "run"]), ("java", &["java"]),
+    ("kotlin", &["kotlin", "-script"]), ("scala", &["scala"]),
+    ("clojure", &["clojure"]), ("haskell", &["runghc"]),
+    ("zig", &["zig", "run"]), ("dart", &["dart", "run"]),
+    ("crystal", &["crystal", "run"]), ("julia", &["julia"]),
+    ("groovy", &["groovy"]),
+];
+
 pub fn script_run_argv(lang: &str, script: &Path) -> Result<Vec<String>> {
     let s = script.to_string_lossy().to_string();
-    Ok(match lang {
-        "python" => vec!["python".into(), s],
-        "lua" => vec!["lua".into(), s],
-        "ruby" => vec!["ruby".into(), s],
-        "node" => vec!["node".into(), s],
-        "deno" => vec!["deno".into(), "run".into(), s],
-        "go" => vec!["go".into(), "run".into(), s],
-        "java" => vec!["java".into(), s],
-        "kotlin" => vec!["kotlin".into(), "-script".into(), s],
-        "scala" => vec!["scala".into(), s],
-        "clojure" => vec!["clojure".into(), s],
-        "haskell" => vec!["runghc".into(), s],
-        "zig" => vec!["zig".into(), "run".into(), s],
-        "dart" => vec!["dart".into(), "run".into(), s],
-        "crystal" => vec!["crystal".into(), "run".into(), s],
-        "julia" => vec!["julia".into(), s],
-        "groovy" => vec!["groovy".into(), s],
-        _ => bail!("internal: no script_run_argv mapping for lang={lang}"),
-    })
+    let prefix = SCRIPT_ARGV_PREFIX.iter().find(|(l, _)| *l == lang);
+    match prefix {
+        Some((_, args)) => {
+            let mut v: Vec<String> = args.iter().map(|a| (*a).to_string()).collect();
+            v.push(s);
+            Ok(v)
+        }
+        None => bail!("internal: no script_run_argv mapping for lang={lang}"),
+    }
 }
 
 /// qusp's curated default version per language for ephemeral runs.
 /// Mirrors the version map used by `qusp init` so a fresh `qusp x
 /// hello.lua` and a fresh `qusp init --langs=lua` agree on what
 /// "latest reasonable" means at this qusp release.
+const DEFAULT_VERSIONS: &[(&str, &str)] = &[
+    ("go", "1.26.2"), ("ruby", "3.4.7"), ("python", "3.14.4"),
+    ("node", "22.9.0"), ("deno", "2.7.14"), ("bun", "1.3.13"),
+    ("java", "21"), ("kotlin", "2.3.21"), ("rust", "1.95.0"),
+    ("zig", "0.16.0"), ("julia", "1.12.6"), ("crystal", "1.20.0"),
+    ("groovy", "4.0.22"), ("dart", "3.5.4"), ("scala", "3.8.3"),
+    ("clojure", "1.12.4.1618"), ("lua", "5.4.7"), ("haskell", "9.10.1"),
+];
+
 pub fn default_version(lang: &str) -> Option<&'static str> {
-    Some(match lang {
-        "go" => "1.26.2",
-        "ruby" => "3.4.7",
-        "python" => "3.14.4",
-        "node" => "22.9.0",
-        "deno" => "2.7.14",
-        "bun" => "1.3.13",
-        "java" => "21",
-        "kotlin" => "2.3.21",
-        "rust" => "1.95.0",
-        "zig" => "0.16.0",
-        "julia" => "1.12.6",
-        "crystal" => "1.20.0",
-        "groovy" => "4.0.22",
-        "dart" => "3.5.4",
-        "scala" => "3.8.3",
-        "clojure" => "1.12.4.1618",
-        "lua" => "5.4.7",
-        "haskell" => "9.10.1",
-        _ => return None,
-    })
+    DEFAULT_VERSIONS.iter().find(|(l, _)| *l == lang).map(|(_, v)| *v)
 }
 
 /// Outcome of inspecting argv[0] for `qusp x` script-routing.
@@ -309,9 +281,12 @@ pub async fn run_script(
     let http = qusp_core::effects::LiveHttp::new(concat!("qusp/", env!("CARGO_PKG_VERSION")))?;
     let progress = qusp_core::effects::LiveProgress::new();
     let opts = qusp_core::InstallOpts::default();
-    let report = backend
-        .install(paths, &version, &opts, &http, &progress)
-        .await?;
+    let ctx = qusp_core::backend::InstallCtx {
+        opts: &opts,
+        http: &http,
+        progress: &progress,
+    };
+    let report = backend.install(paths, &version, &ctx).await?;
     if !report.already_present {
         anyv_core::say!(
             "{} {lang} {} installed for ephemeral run",

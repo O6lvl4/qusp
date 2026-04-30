@@ -93,10 +93,11 @@ impl Backend for JuliaBackend {
         &self,
         _: &AnyvPaths,
         version: &str,
-        _opts: &InstallOpts,
-        http: &dyn crate::effects::HttpFetcher,
-        progress: &dyn crate::effects::ProgressReporter,
+        ctx: &crate::backend::InstallCtx<'_>,
     ) -> Result<InstallReport> {
+        let http = ctx.http;
+        let progress = ctx.progress;
+
         let paths = paths()?;
         paths.ensure_dirs()?;
         let install_dir = julia_root(&paths, version);
