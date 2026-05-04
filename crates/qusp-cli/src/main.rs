@@ -51,6 +51,7 @@ enum Cmd {
     Backends,
     /// Install toolchains. With no args, installs everything pinned in
     /// qusp.toml (in parallel). With `<lang> <version>`, installs just one.
+    #[command(disable_version_flag = true)]
     Install {
         lang: Option<String>,
         version: Option<String>,
@@ -206,6 +207,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
 
 fn build_registry() -> BackendRegistry {
     let mut r = BackendRegistry::new();
+    r.register(Arc::new(backends::almide::AlmideBackend));
     r.register(Arc::new(backends::go::GoBackend));
     r.register(Arc::new(backends::ruby::RubyBackend));
     r.register(Arc::new(backends::python::PythonBackend));

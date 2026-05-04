@@ -2,6 +2,7 @@
 //! download / verify / install logic. No subprocess wrappers around
 //! competing version managers.
 
+pub mod almide;
 pub mod bun;
 pub mod clojure;
 pub mod crystal;
