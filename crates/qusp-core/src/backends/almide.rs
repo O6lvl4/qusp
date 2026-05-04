@@ -86,6 +86,19 @@ impl Backend for AlmideBackend {
         let http = ctx.http;
         let progress = ctx.progress;
 
+        // `latest` resolves against the GitHub release index. We do this
+        // first so we hit the cached store path on subsequent calls.
+        let resolved = if version == "latest" {
+            self.list_remote(http)
+                .await?
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow!("no almide releases found upstream"))?
+        } else {
+            strip_v(version).to_string()
+        };
+        let version = resolved.as_str();
+
         let paths = paths()?;
         paths.ensure_dirs()?;
         let install_dir = almide_root(&paths, version);
