@@ -15,7 +15,6 @@ description = "Every language toolchain in superposition. `cd` collapses to one.
 [workspace.dependencies]
 anyv-core = { git = "https://github.com/O6lvl4/anyv-core", tag = "v0.1.0" }
 gv-core = { git = "https://github.com/O6lvl4/gv", tag = "v0.6.0" }
-rv-core = { git = "https://github.com/O6lvl4/rv", tag = "v0.2.0" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

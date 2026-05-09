@@ -114,7 +114,7 @@ $ which python
 | Backend | Source | Verification | Tools |
 |---|---|---|---|
 | **go** | go.dev official tarballs | sha256 | full `gv` registry (gopls, golangci-lint, …) |
-| **ruby** | ruby-lang.org via `ruby-build` | sha256 | bundler, rake (via `rv`) |
+| **ruby** | ruby/ruby-builder prebuilt | sha256 | bundler, rake, rubocop, rails, … |
 | **python** | python-build-standalone | sha256 | — |
 | **node** | nodejs.org official | sha256 | pnpm, yarn, tsc, prettier |
 | **deno** | denoland/deno releases | sha256 | — |
@@ -189,9 +189,8 @@ step at all.
 - `qusp-cli` — argv[0] dispatch (`qusp` vs `quspx`), command surface
 - Substrate: [`anyv-core`](https://github.com/O6lvl4/anyv-core) (paths,
   extract, sha verification, presentation, self-update)
-- Direct deps: [`gv-core`](https://github.com/O6lvl4/gv) for Go,
-  [`rv-core`](https://github.com/O6lvl4/rv) for Ruby — Cargo libraries,
-  not subprocesses
+- Direct dep: [`gv-core`](https://github.com/O6lvl4/gv) for Go — Cargo
+  library, not a subprocess
 
 The orchestrator is the only place that fans out across backends. CLI
 handlers reduce to `Orchestrator::{install_toolchains, sync, add_tool,
@@ -235,6 +234,14 @@ This is a single-author project right now. Issues + PRs welcome on
 GitHub. Architecture deviations should come with a `docs/RFC-*.md`
 proposal that matches the rest of the design philosophy: native-Rust,
 strict-verification, no plugin layer.
+
+## Related projects
+
+- **[Almide](https://github.com/almide/almide)** — a programming language
+  by the same author, designed for maximum LLM code generation accuracy.
+  Pure-Rust compiler with multi-target codegen (Rust, TypeScript, JavaScript,
+  WASM). qusp and Almide share the same design philosophy: native Rust,
+  no plugin layer, depth over breadth.
 
 ## License
 
