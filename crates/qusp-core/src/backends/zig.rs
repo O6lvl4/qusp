@@ -18,27 +18,20 @@ use serde::Deserialize;
 use sha2::Digest;
 
 use crate::backend::*;
+use super::common;
 
 pub struct ZigBackend;
 
 const INDEX_URL: &str = "https://ziglang.org/download/index.json";
 
 fn target_triple() -> Option<&'static str> {
-    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+    Some(match common::os_arch() {
         ("macos", "aarch64") => "aarch64-macos",
         ("macos", "x86_64") => "x86_64-macos",
         ("linux", "x86_64") => "x86_64-linux",
         ("linux", "aarch64") => "aarch64-linux",
         _ => return None,
     })
-}
-
-fn paths() -> Result<AnyvPaths> {
-    AnyvPaths::discover("qusp")
-}
-
-fn zig_root(p: &AnyvPaths, version: &str) -> PathBuf {
-    p.data.join("zig").join(version)
 }
 
 #[derive(Debug, Deserialize)]
@@ -80,59 +73,39 @@ impl Backend for ZigBackend {
         &self,
         _: &AnyvPaths,
         version: &str,
-        ctx: &crate::backend::InstallCtx<'_>,
+        ctx: &InstallCtx<'_>,
     ) -> Result<InstallReport> {
-        let http = ctx.http;
-        let progress = ctx.progress;
-
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         paths.ensure_dirs()?;
-        let install_dir = zig_root(&paths, version);
-        if install_dir.join("zig").exists() {
-            return Ok(InstallReport {
-                version: version.to_string(),
-                install_dir,
-                already_present: true,
-            });
-        }
+        let install_dir = common::lang_root(&paths, "zig", version);
 
-        // W1 fix: serialize concurrent installs of the same lang+version.
-        // Held until install completes; different versions / langs unaffected.
-        let _install_guard =
-            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        if let Some(report) = common::check_already_installed(&install_dir, "zig", version) {
+            return Ok(report);
+        }
+        let _guard = common::acquire_install_lock(&install_dir)?;
+
         let triple =
             target_triple().ok_or_else(|| anyhow!("ziglang.org has no asset for this platform"))?;
-
-        let body = http
+        let body = ctx.http
             .get_text(INDEX_URL)
             .await
             .with_context(|| format!("fetch {INDEX_URL}"))?;
         let asset = pick_zig_asset(&body, version, triple)?
             .ok_or_else(|| anyhow!("no Zig asset for {version} on {triple}"))?;
 
-        let mut task = progress.start(&format!("downloading zig {version}"), None);
-        let bytes = http
-            .get_bytes_streaming(&asset.tarball, task.as_mut())
-            .await
-            .with_context(|| format!("download {}", asset.tarball))?;
-        task.finish(format!("downloaded zig {version}"));
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(&bytes);
-        let actual = hex::encode(hasher.finalize());
-        if !asset.shasum.eq_ignore_ascii_case(&actual) {
-            bail!(
-                "sha256 mismatch for {}: expected {}, got {actual}",
-                asset.tarball,
-                asset.shasum
-            );
-        }
+        let bytes = common::download_and_verify(
+            ctx.http, &asset.tarball, &asset.shasum, ctx.progress,
+            &format!("zig {version}"),
+        ).await?;
 
-        // Stage in cache, decompress xz → extract tar, promote to store.
-        let cache_path = paths.cache.join(format!("zig-{version}-{triple}.tar.xz"));
+        // Zig uses .tar.xz — custom extractor needed (not handled by anyv extract_archive).
+        let cache_name = format!("zig-{version}-{triple}.tar.xz");
+        let cache_path = paths.cache.join(&cache_name);
         anyv_core::paths::ensure_dir(&paths.cache)?;
         std::fs::write(&cache_path, &bytes)?;
 
-        let store_dir = paths.store().join(&actual[..16]);
+        let sha_hex = hex::encode(sha2::Digest::finalize(sha2::Sha256::new_with_prefix(&bytes)));
+        let store_dir = paths.store().join(&sha_hex[..16]);
         if store_dir.exists() {
             std::fs::remove_dir_all(&store_dir).ok();
         }
@@ -140,14 +113,8 @@ impl Backend for ZigBackend {
         extract_tar_xz(&cache_path, &store_dir)?;
         let _ = std::fs::remove_file(&cache_path);
 
-        // Tarball expands to `zig-{triple}-{version}/{zig, lib/, doc/, ...}`.
         let inner = find_zig_top(&store_dir)?;
-
-        if let Some(parent) = install_dir.parent() {
-            anyv_core::paths::ensure_dir(parent)?;
-        }
-        crate::effects::atomic_symlink_swap(&inner, &install_dir)
-            .with_context(|| format!("symlink {} → {}", install_dir.display(), inner.display()))?;
+        common::finalize_install(&inner, &install_dir)?;
 
         Ok(InstallReport {
             version: version.to_string(),
@@ -157,35 +124,11 @@ impl Backend for ZigBackend {
     }
 
     fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
-        let paths = paths()?;
-        let dir = zig_root(&paths, version);
-        if !dir.exists() && !dir.is_symlink() {
-            bail!("zig {version} is not installed via qusp");
-        }
-        std::fs::remove_file(&dir)
-            .or_else(|_| std::fs::remove_dir_all(&dir))
-            .with_context(|| format!("remove {}", dir.display()))?;
-        Ok(())
+        common::uninstall_version("zig", version)
     }
 
     fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
-        let paths = paths()?;
-        let dir = paths.data.join("zig");
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&dir)? {
-            let e = e?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            // Skip the install lock files written by `StoreLock::acquire`.
-            if name.ends_with(".qusp-lock") {
-                continue;
-            }
-            out.push(name);
-        }
-        out.sort_by(|a, b| version_cmp(b, a));
-        Ok(out)
+        common::list_installed_versions("zig")
     }
 
     async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
@@ -198,9 +141,8 @@ impl Backend for ZigBackend {
     }
 
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
-        let paths = paths()?;
-        let root = zig_root(&paths, version);
-        // Zig's binary sits at the install dir root, not in bin/.
+        let paths = common::qusp_paths()?;
+        let root = common::lang_root(&paths, "zig", version);
         Ok(RunEnv {
             path_prepend: vec![root],
             env: Default::default(),
@@ -213,9 +155,7 @@ impl Backend for ZigBackend {
     }
 }
 
-/// Pure: pick `(tarball_url, sha256)` for the given version + triple
-/// out of a ziglang.org index.json body. Returns `Ok(None)` when the
-/// version exists but the triple is missing; errors on JSON parse failure.
+/// Pure: pick `(tarball_url, sha256)` for the given version + triple.
 pub(crate) fn pick_zig_asset(
     index_body: &str,
     version: &str,
@@ -234,8 +174,7 @@ pub(crate) fn pick_zig_asset(
     Ok(Some(asset))
 }
 
-/// Pure: stable versions only, sorted newest first. `master` (nightly)
-/// and any `-dev` / `-rc` pre-releases skipped.
+/// Pure: stable versions only, sorted newest first.
 pub(crate) fn list_zig_versions(index_body: &str) -> Vec<String> {
     let Ok(root) = serde_json::from_str::<serde_json::Value>(index_body) else {
         return Vec::new();
@@ -248,12 +187,11 @@ pub(crate) fn list_zig_versions(index_body: &str) -> Vec<String> {
         .filter(|k| *k != "master" && !k.contains('-'))
         .cloned()
         .collect();
-    out.sort_by(|a, b| version_cmp(b, a));
+    out.sort_by(|a, b| common::version_cmp(b, a));
     out
 }
 
-/// `.tar.xz` extraction. lzma-rs decompresses the xz layer; tar-rs
-/// unpacks. Pure-Rust path; no liblzma C dep.
+/// `.tar.xz` extraction via lzma-rs + tar-rs. Pure-Rust, no liblzma.
 fn extract_tar_xz(archive: &Path, dest: &Path) -> Result<()> {
     let f = std::fs::File::open(archive).with_context(|| format!("open {}", archive.display()))?;
     let mut reader = std::io::BufReader::new(f);
@@ -268,7 +206,6 @@ fn extract_tar_xz(archive: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Zig's tarball expands to a single top-level dir (`zig-x86_64-linux-0.13.0/`).
 fn find_zig_top(store_dir: &Path) -> Result<PathBuf> {
     for e in std::fs::read_dir(store_dir)? {
         let e = e?;
@@ -283,18 +220,6 @@ fn find_zig_top(store_dir: &Path) -> Result<PathBuf> {
         "no `zig` binary inside extracted archive at {}",
         store_dir.display()
     )
-}
-
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    fn parts(s: &str) -> (u64, u64, u64) {
-        let mut p = s.split('.').map(|x| x.parse::<u64>().unwrap_or(0));
-        (
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-        )
-    }
-    parts(a).cmp(&parts(b))
 }
 
 #[cfg(test)]
@@ -336,7 +261,6 @@ mod tests {
 
     #[test]
     fn returns_none_when_triple_missing() {
-        // 0.15.1 doesn't have linux in our sample.
         assert!(pick_zig_asset(SAMPLE, "0.15.1", "x86_64-linux")
             .unwrap()
             .is_none());

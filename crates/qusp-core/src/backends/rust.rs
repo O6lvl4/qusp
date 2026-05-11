@@ -1,53 +1,32 @@
 //! Rust backend — native installer.
 //!
 //! Toolchains come from `static.rust-lang.org`, the same CDN that
-//! powers `rustup`. For a pin like `rust = "1.78.0"`, qusp downloads
-//! `rust-1.78.0-<triple>.tar.gz` (the unified installer bundle) and
-//! verifies it against the matching `.sha256` sidecar.
-//!
-//! The unified tarball is structured as one directory per component
-//! (`rustc/`, `cargo/`, `rust-std-<triple>/`, …), each laying out its
-//! own `bin/`, `lib/`, `share/` subtree. Upstream's `install.sh` would
-//! merge those into a flat layout. We re-implement that merge in Rust
-//! (skipping `manifest.in` and `components` markers) so the install is
-//! purely Rust + filesystem — **no subprocess freeloading** on
-//! `install.sh` or `rustup`.
-//!
-//! Tools are intentionally empty for v0.7.0. Cargo's own
-//! `cargo install` (and `cargo binstall` if pinned manually under
-//! `[rust.tools]`) handles the Rust ecosystem more honestly than a
-//! curated registry would.
+//! powers `rustup`. qusp downloads the unified tarball, verifies
+//! against the `.sha256` sidecar, and merges components (rustc,
+//! cargo, rust-std, …) into a single install prefix — no subprocess
+//! freeloading on `install.sh` or `rustup`.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
-use anyv_core::extract::extract_archive;
 use anyv_core::Paths as AnyvPaths;
 use async_trait::async_trait;
-use sha2::Digest;
 
 use crate::backend::*;
+use super::common;
 
 pub struct RustBackend;
 
 const DIST_BASE: &str = "https://static.rust-lang.org/dist";
 
 fn target_triple() -> Option<&'static str> {
-    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+    Some(match common::os_arch() {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         ("macos", "x86_64") => "x86_64-apple-darwin",
         ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
         ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
         _ => return None,
     })
-}
-
-fn paths() -> Result<AnyvPaths> {
-    AnyvPaths::discover("qusp")
-}
-
-fn rust_root(p: &AnyvPaths, version: &str) -> PathBuf {
-    p.data.join("rust").join(version)
 }
 
 #[async_trait]
@@ -65,7 +44,6 @@ impl Backend for RustBackend {
     async fn detect_version(&self, cwd: &Path) -> Result<Option<DetectedVersion>> {
         let mut dir: Option<&Path> = Some(cwd);
         while let Some(d) = dir {
-            // Plain text `rust-toolchain` first (asdf-compatible).
             let plain = d.join("rust-toolchain");
             if plain.is_file() {
                 let raw = std::fs::read_to_string(&plain).unwrap_or_default();
@@ -78,7 +56,6 @@ impl Backend for RustBackend {
                     }));
                 }
             }
-            // TOML form: [toolchain] channel = "1.78.0"
             let toml_form = d.join("rust-toolchain.toml");
             if toml_form.is_file() {
                 let raw = std::fs::read_to_string(&toml_form).unwrap_or_default();
@@ -99,31 +76,21 @@ impl Backend for RustBackend {
         &self,
         _: &AnyvPaths,
         version: &str,
-        ctx: &crate::backend::InstallCtx<'_>,
+        ctx: &InstallCtx<'_>,
     ) -> Result<InstallReport> {
-        let http = ctx.http;
-
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         paths.ensure_dirs()?;
-        let install_dir = rust_root(&paths, version);
-        if install_dir.join("bin").join("rustc").exists() {
-            return Ok(InstallReport {
-                version: version.to_string(),
-                install_dir,
-                already_present: true,
-            });
-        }
+        let install_dir = common::lang_root(&paths, "rust", version);
 
-        // W1 fix: serialize concurrent installs of the same lang+version.
-        // Held until install completes; different versions / langs unaffected.
-        let _install_guard =
-            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        if let Some(report) = common::check_already_installed(&install_dir, "bin/rustc", version) {
+            return Ok(report);
+        }
+        let _guard = common::acquire_install_lock(&install_dir)?;
+
         let triple = target_triple()
             .ok_or_else(|| anyhow!("static.rust-lang.org has no asset for this platform"))?;
-        // Resolve channel names (stable/beta/nightly) to a concrete version
-        // by reading the channel manifest.
         let resolved_version = if matches!(version, "stable" | "beta" | "nightly") {
-            resolve_channel(http, version).await?
+            resolve_channel(ctx.http, version).await?
         } else {
             version.to_string()
         };
@@ -131,7 +98,7 @@ impl Backend for RustBackend {
         let asset_url = format!("{DIST_BASE}/{asset}");
         let sha_url = format!("{asset_url}.sha256");
 
-        let sha_text = http
+        let sha_text = ctx.http
             .get_text(&sha_url)
             .await
             .with_context(|| format!("fetch {sha_url}"))?;
@@ -141,45 +108,19 @@ impl Backend for RustBackend {
             .ok_or_else(|| anyhow!("empty sha256 sidecar for {asset}"))?
             .to_string();
 
-        let bytes = http
-            .get_bytes(&asset_url)
-            .await
-            .with_context(|| format!("download {asset_url}"))?;
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(&bytes);
-        let actual = hex::encode(hasher.finalize());
-        if expected != actual {
-            bail!("sha256 mismatch for {asset}: expected {expected}, got {actual}");
-        }
+        let bytes = common::download_and_verify(
+            ctx.http, &asset_url, &expected, ctx.progress,
+            &format!("rust {resolved_version}"),
+        ).await?;
 
-        let cache_path = paths.cache.join(&asset);
-        anyv_core::paths::ensure_dir(&paths.cache)?;
-        std::fs::write(&cache_path, &bytes)?;
-        let store_dir = paths.store().join(&actual[..16]);
-        if store_dir.exists() {
-            std::fs::remove_dir_all(&store_dir).ok();
-        }
-        anyv_core::paths::ensure_dir(&store_dir)?;
-        extract_archive(&cache_path, &store_dir)?;
-        let _ = std::fs::remove_file(&cache_path);
+        let store_dir = common::stage_to_store(&paths, &bytes, &expected, &asset)?;
 
-        // Find the unified top-level dir, then merge each component into a
-        // single install prefix. This is what install.sh would have done.
         let top = find_unified_top(&store_dir)?;
         let merged_root = store_dir.join("merged");
         anyv_core::paths::ensure_dir(&merged_root)?;
         merge_components(&top, &merged_root)?;
 
-        if let Some(parent) = install_dir.parent() {
-            anyv_core::paths::ensure_dir(parent)?;
-        }
-        crate::effects::atomic_symlink_swap(&merged_root, &install_dir).with_context(|| {
-            format!(
-                "symlink {} → {}",
-                install_dir.display(),
-                merged_root.display()
-            )
-        })?;
+        common::finalize_install(&merged_root, &install_dir)?;
 
         Ok(InstallReport {
             version: resolved_version,
@@ -189,41 +130,14 @@ impl Backend for RustBackend {
     }
 
     fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
-        let paths = paths()?;
-        let dir = rust_root(&paths, version);
-        if !dir.exists() && !dir.is_symlink() {
-            bail!("rust {version} is not installed via qusp");
-        }
-        std::fs::remove_file(&dir)
-            .or_else(|_| std::fs::remove_dir_all(&dir))
-            .with_context(|| format!("remove {}", dir.display()))?;
-        Ok(())
+        common::uninstall_version("rust", version)
     }
 
     fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
-        let paths = paths()?;
-        let dir = paths.data.join("rust");
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&dir)? {
-            let e = e?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            // Skip the install lock files written by `StoreLock::acquire`.
-            if name.ends_with(".qusp-lock") {
-                continue;
-            }
-            out.push(name);
-        }
-        out.sort_by(|a, b| version_cmp(b, a));
-        Ok(out)
+        common::list_installed_versions("rust")
     }
 
     async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
-        // Resolved stable first so consumers (e.g. `qusp outdated`) treat
-        // the concrete version as "newest". Channel pointers follow for
-        // human reference.
         let stable = resolve_channel(http, "stable").await.unwrap_or_default();
         let mut out = Vec::new();
         if !stable.is_empty() {
@@ -241,9 +155,7 @@ impl Backend for RustBackend {
     ) -> Result<ResolvedTool> {
         bail!(
             "Rust ecosystem tools are managed by `cargo install` / `cargo binstall`. \
-             qusp doesn't curate a Rust tool registry — pin under [rust.tools] manually \
-             with explicit `package = \"…\"` if you need it tracked. '{name}' has no \
-             qusp-managed install path."
+             '{name}' has no qusp-managed install path."
         )
     }
 
@@ -252,8 +164,8 @@ impl Backend for RustBackend {
     }
 
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
-        let paths = paths()?;
-        let root = rust_root(&paths, version);
+        let paths = common::qusp_paths()?;
+        let root = common::lang_root(&paths, "rust", version);
         let mut env = std::collections::BTreeMap::new();
         env.insert("RUSTUP_TOOLCHAIN".into(), version.to_string());
         Ok(RunEnv {
@@ -277,12 +189,8 @@ impl Backend for RustBackend {
     }
 }
 
-/// Resolve `stable`/`beta`/`nightly` to a concrete version string by
-/// fetching the channel manifest. The manifest is laid out as:
-///   `[pkg.cargo]` section, then `[pkg.rust]` section, then `[pkg.rustc]`
-///   section, each with its own `version = "X.Y.Z (commit-sha date)"`.
-/// We want `[pkg.rust]`'s version, which mirrors what `rustup install
-/// stable` resolves to.
+// ─── Channel resolution ─────────────────────────────────────────────
+
 async fn resolve_channel(http: &dyn crate::effects::HttpFetcher, channel: &str) -> Result<String> {
     let url = format!("{DIST_BASE}/channel-rust-{channel}.toml");
     let body = http
@@ -294,8 +202,6 @@ async fn resolve_channel(http: &dyn crate::effects::HttpFetcher, channel: &str) 
     })
 }
 
-/// Pure: scan a `channel-rust-<channel>.toml` body for `[pkg.rust]` and
-/// return the bare version (e.g. `1.95.0`).
 pub(crate) fn parse_channel_rust_version(body: &str, _channel: &str) -> Option<String> {
     let mut in_rust_section = false;
     for line in body.lines() {
@@ -310,7 +216,6 @@ pub(crate) fn parse_channel_rust_version(body: &str, _channel: &str) -> Option<S
         if let Some(rest) = line.strip_prefix("version = \"") {
             if let Some(end) = rest.find('"') {
                 let raw = &rest[..end];
-                // raw looks like `1.85.0 (commit-sha YYYY-MM-DD)`.
                 if let Some(v) = raw.split_whitespace().next() {
                     return Some(v.to_string());
                 }
@@ -320,14 +225,13 @@ pub(crate) fn parse_channel_rust_version(body: &str, _channel: &str) -> Option<S
     None
 }
 
-/// The unified Rust tarball expands to one top-level directory like
-/// `rust-1.78.0-<triple>/`. Find it.
+// ─── Component merge ────────────────────────────────────────────────
+
 fn find_unified_top(store_dir: &Path) -> Result<PathBuf> {
     for e in std::fs::read_dir(store_dir)? {
         let e = e?;
         if e.file_type()?.is_dir() {
             let p = e.path();
-            // The unified top-level dir contains a `components` text file.
             if p.join("components").is_file() {
                 return Ok(p);
             }
@@ -339,9 +243,6 @@ fn find_unified_top(store_dir: &Path) -> Result<PathBuf> {
     )
 }
 
-/// Merge each component subtree (`rustc/`, `cargo/`, `rust-std-…/`, …)
-/// into a single install prefix. This is what `install.sh` does in
-/// shell; we do it in Rust.
 fn merge_components(top: &Path, dest: &Path) -> Result<()> {
     let components = std::fs::read_to_string(top.join("components"))
         .with_context(|| format!("read {}", top.join("components").display()))?;
@@ -352,7 +253,6 @@ fn merge_components(top: &Path, dest: &Path) -> Result<()> {
         }
         let comp_dir = top.join(comp);
         if !comp_dir.is_dir() {
-            // Not all listed components ship in every channel/host; skip.
             continue;
         }
         copy_tree(&comp_dir, dest)?;
@@ -360,8 +260,6 @@ fn merge_components(top: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Recursively copy `src/**` into `dest/**`, skipping the per-component
-/// `manifest.in` markers.
 fn copy_tree(src: &Path, dest: &Path) -> Result<()> {
     if !src.is_dir() {
         return Ok(());
@@ -370,7 +268,6 @@ fn copy_tree(src: &Path, dest: &Path) -> Result<()> {
         let e = e?;
         let from = e.path();
         let name = e.file_name();
-        // Skip per-component metadata.
         if name == "manifest.in" {
             continue;
         }
@@ -380,36 +277,41 @@ fn copy_tree(src: &Path, dest: &Path) -> Result<()> {
             anyv_core::paths::ensure_dir(&to)?;
             copy_tree(&from, &to)?;
         } else if ft.is_symlink() {
-            let target = std::fs::read_link(&from)?;
-            // Idempotent: if a symlink with the same target already exists, skip.
-            if to.exists() || to.is_symlink() {
-                let _ = std::fs::remove_file(&to);
-            }
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&target, &to)?;
-            #[cfg(windows)]
-            {
-                let _ = target;
-                std::fs::copy(&from, &to)?;
-            }
-        } else {
-            // First component to deposit a file wins; subsequent components
-            // skip (matches install.sh semantics where `rustc` ships the
-            // base files and overlays add new ones).
-            if !to.exists() {
-                std::fs::copy(&from, &to)?;
-                #[cfg(unix)]
-                {
-                    let perms = std::fs::metadata(&from)?.permissions();
-                    std::fs::set_permissions(&to, perms)?;
-                }
-            }
+            copy_symlink(&from, &to)?;
+        } else if !to.exists() {
+            copy_file_with_perms(&from, &to)?;
         }
     }
     Ok(())
 }
 
-/// Pull the `channel = "..."` value out of a rust-toolchain.toml.
+fn copy_symlink(from: &Path, to: &Path) -> Result<()> {
+    let target = std::fs::read_link(from)?;
+    if to.exists() || to.is_symlink() {
+        let _ = std::fs::remove_file(to);
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target, to)?;
+    #[cfg(windows)]
+    {
+        let _ = target;
+        std::fs::copy(from, to)?;
+    }
+    Ok(())
+}
+
+fn copy_file_with_perms(from: &Path, to: &Path) -> Result<()> {
+    std::fs::copy(from, to)?;
+    #[cfg(unix)]
+    {
+        let perms = std::fs::metadata(from)?.permissions();
+        std::fs::set_permissions(to, perms)?;
+    }
+    Ok(())
+}
+
+// ─── Toolchain file parsing ─────────────────────────────────────────
+
 fn parse_toolchain_channel(raw: &str) -> Option<String> {
     for line in raw.lines() {
         let line = line.trim();
@@ -422,19 +324,6 @@ fn parse_toolchain_channel(raw: &str) -> Option<String> {
         }
     }
     None
-}
-
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    fn parts(s: &str) -> (u64, u64, u64) {
-        let s = s.split_whitespace().next().unwrap_or(s);
-        let mut p = s.split('.').map(|x| x.parse::<u64>().unwrap_or(0));
-        (
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-        )
-    }
-    parts(a).cmp(&parts(b))
 }
 
 #[cfg(test)]
