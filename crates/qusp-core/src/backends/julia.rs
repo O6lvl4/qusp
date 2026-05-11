@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use sha2::Digest;
 
+use super::common;
 use crate::backend::*;
 
 pub struct JuliaBackend;
@@ -26,21 +27,13 @@ const VERSIONS_URL: &str = "https://julialang-s3.julialang.org/bin/versions.json
 /// julialang-s3 names macOS as `"mac"` and Windows as `"winnt"`.
 /// Architectures use plain `"x86_64"`/`"aarch64"`, matching std::env::consts::ARCH.
 fn host_os_arch() -> Option<(&'static str, &'static str)> {
-    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+    Some(match common::os_arch() {
         ("macos", "aarch64") => ("mac", "aarch64"),
         ("macos", "x86_64") => ("mac", "x86_64"),
         ("linux", "x86_64") => ("linux", "x86_64"),
         ("linux", "aarch64") => ("linux", "aarch64"),
         _ => return None,
     })
-}
-
-fn paths() -> Result<AnyvPaths> {
-    AnyvPaths::discover("qusp")
-}
-
-fn julia_root(p: &AnyvPaths, version: &str) -> PathBuf {
-    p.data.join("julia").join(version)
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,9 +91,9 @@ impl Backend for JuliaBackend {
         let http = ctx.http;
         let progress = ctx.progress;
 
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         paths.ensure_dirs()?;
-        let install_dir = julia_root(&paths, version);
+        let install_dir = common::lang_root(&paths, "julia", version);
         if install_dir.join("bin").join("julia").exists() {
             return Ok(InstallReport {
                 version: version.to_string(),
@@ -111,8 +104,7 @@ impl Backend for JuliaBackend {
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard =
-            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        let _install_guard = common::acquire_install_lock(&install_dir)?;
         let (os, arch) =
             host_os_arch().ok_or_else(|| anyhow!("julialang-s3 has no asset for this platform"))?;
 
@@ -170,35 +162,11 @@ impl Backend for JuliaBackend {
     }
 
     fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
-        let paths = paths()?;
-        let dir = julia_root(&paths, version);
-        if !dir.exists() && !dir.is_symlink() {
-            bail!("julia {version} is not installed via qusp");
-        }
-        std::fs::remove_file(&dir)
-            .or_else(|_| std::fs::remove_dir_all(&dir))
-            .with_context(|| format!("remove {}", dir.display()))?;
-        Ok(())
+        common::uninstall_version("julia", version)
     }
 
     fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
-        let paths = paths()?;
-        let dir = paths.data.join("julia");
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&dir)? {
-            let e = e?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            // Skip the install lock files written by `StoreLock::acquire`.
-            if name.ends_with(".qusp-lock") {
-                continue;
-            }
-            out.push(name);
-        }
-        out.sort_by(|a, b| version_cmp(b, a));
-        Ok(out)
+        common::list_installed_versions("julia")
     }
 
     async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
@@ -211,8 +179,8 @@ impl Backend for JuliaBackend {
     }
 
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
-        let paths = paths()?;
-        let root = julia_root(&paths, version);
+        let paths = common::qusp_paths()?;
+        let root = common::lang_root(&paths, "julia", version);
         Ok(RunEnv {
             path_prepend: vec![root.join("bin")],
             env: Default::default(),
@@ -255,7 +223,7 @@ pub(crate) fn list_julia_versions(body: &str) -> Vec<String> {
         return Vec::new();
     };
     let mut out: Vec<String> = obj.keys().filter(|k| !k.contains('-')).cloned().collect();
-    out.sort_by(|a, b| version_cmp(b, a));
+    out.sort_by(|a, b| common::version_cmp(b, a));
     out
 }
 
@@ -273,18 +241,6 @@ fn find_julia_top(store_dir: &Path) -> Result<PathBuf> {
         "no `bin/julia` inside extracted archive at {}",
         store_dir.display()
     )
-}
-
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    fn parts(s: &str) -> (u64, u64, u64) {
-        let mut p = s.split('.').map(|x| x.parse::<u64>().unwrap_or(0));
-        (
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-        )
-    }
-    parts(a).cmp(&parts(b))
 }
 
 #[cfg(test)]

@@ -50,6 +50,7 @@ use anyv_core::Paths as AnyvPaths;
 use async_trait::async_trait;
 use sha2::Digest;
 
+use super::common;
 use crate::backend::*;
 
 pub struct HaskellBackend;
@@ -59,21 +60,13 @@ pub struct HaskellBackend;
 /// older GHCs but won't know about newer compilers.
 const GHCUP_VERSION: &str = "0.1.50.2";
 
-fn paths() -> Result<AnyvPaths> {
-    AnyvPaths::discover("qusp")
-}
-
-fn haskell_root(p: &AnyvPaths, ghc_version: &str) -> PathBuf {
-    p.data.join("haskell").join(ghc_version)
-}
-
 // haskell_store_root was generalised in v0.28.1 to
 // `crate::effects::no_space_store_root("haskell")` — see
 // `effects/space_trap.rs` for the documented rationale (Pattern 3:
 // up-front no-space install root for autotools-style configures).
 
 fn ghcup_triple() -> Option<&'static str> {
-    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+    Some(match common::os_arch() {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         ("macos", "x86_64") => "x86_64-apple-darwin",
         ("linux", "aarch64") => "aarch64-linux",
@@ -130,9 +123,9 @@ impl Backend for HaskellBackend {
         let http = ctx.http;
         let progress = ctx.progress;
 
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         paths.ensure_dirs()?;
-        let install_dir = haskell_root(&paths, version);
+        let install_dir = common::lang_root(&paths, "haskell", version);
         if install_dir.join("bin").join("ghc").exists() {
             return Ok(InstallReport {
                 version: version.to_string(),
@@ -143,8 +136,7 @@ impl Backend for HaskellBackend {
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard =
-            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        let _install_guard = common::acquire_install_lock(&install_dir)?;
         let triple = ghcup_triple().ok_or_else(|| {
             anyhow!(
                 "ghcup is not published for {}-{}",
@@ -256,35 +248,11 @@ impl Backend for HaskellBackend {
     }
 
     fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
-        let paths = paths()?;
-        let dir = haskell_root(&paths, version);
-        if !dir.exists() && !dir.is_symlink() {
-            bail!("haskell {version} is not installed via qusp");
-        }
-        std::fs::remove_file(&dir)
-            .or_else(|_| std::fs::remove_dir_all(&dir))
-            .with_context(|| format!("remove {}", dir.display()))?;
-        Ok(())
+        common::uninstall_version("haskell", version)
     }
 
     fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
-        let paths = paths()?;
-        let dir = paths.data.join("haskell");
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&dir)? {
-            let e = e?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            // Skip the install lock files written by `StoreLock::acquire`.
-            if name.ends_with(".qusp-lock") {
-                continue;
-            }
-            out.push(name);
-        }
-        out.sort_by(|a, b| version_cmp(b, a));
-        Ok(out)
+        common::list_installed_versions("haskell")
     }
 
     async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
@@ -308,8 +276,8 @@ impl Backend for HaskellBackend {
     }
 
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
-        let paths = paths()?;
-        let root = haskell_root(&paths, version);
+        let paths = common::qusp_paths()?;
+        let root = common::lang_root(&paths, "haskell", version);
         let mut env = std::collections::BTreeMap::new();
         env.insert("GHC_HOME".into(), root.to_string_lossy().into_owned());
         Ok(RunEnv {
@@ -380,23 +348,6 @@ fn pick_sha256_for(body: &str, asset_name: &str) -> Option<String> {
         }
     }
     None
-}
-
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    fn parts(s: &str) -> (u64, u64, u64, u64) {
-        let s = s.trim_start_matches('v');
-        let mut p = s.split('.').map(|x| {
-            let n: String = x.chars().take_while(|c| c.is_ascii_digit()).collect();
-            n.parse::<u64>().unwrap_or(0)
-        });
-        (
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-        )
-    }
-    parts(a).cmp(&parts(b))
 }
 
 #[cfg(test)]
@@ -472,7 +423,7 @@ af73a147506c1d2f8a8c9f36af45a88217b358514053360244f6e0b0cd599533  ./test-optpars
     #[test]
     fn version_cmp_orders_ghc_releases() {
         let mut v = vec!["9.10.1", "9.8.4", "9.6.6", "9.4.8", "9.2.8"];
-        v.sort_by(|a, b| version_cmp(b, a));
+        v.sort_by(|a, b| common::version_cmp(b, a));
         assert_eq!(v, vec!["9.10.1", "9.8.4", "9.6.6", "9.4.8", "9.2.8"]);
     }
 }

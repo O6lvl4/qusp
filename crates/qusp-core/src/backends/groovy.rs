@@ -33,19 +33,12 @@ use anyv_core::Paths as AnyvPaths;
 use async_trait::async_trait;
 use sha2::Digest;
 
+use super::common;
 use crate::backend::*;
 
 pub struct GroovyBackend;
 
 const DIST_BASE: &str = "https://archive.apache.org/dist/groovy";
-
-fn paths() -> Result<AnyvPaths> {
-    AnyvPaths::discover("qusp")
-}
-
-fn groovy_root(p: &AnyvPaths, version: &str) -> PathBuf {
-    p.data.join("groovy").join(version)
-}
 
 #[async_trait]
 impl Backend for GroovyBackend {
@@ -91,9 +84,9 @@ impl Backend for GroovyBackend {
         let http = ctx.http;
         let progress = ctx.progress;
 
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         paths.ensure_dirs()?;
-        let install_dir = groovy_root(&paths, version);
+        let install_dir = common::lang_root(&paths, "groovy", version);
         if install_dir.join("bin").join("groovy").exists() {
             return Ok(InstallReport {
                 version: version.to_string(),
@@ -104,8 +97,7 @@ impl Backend for GroovyBackend {
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard =
-            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        let _install_guard = common::acquire_install_lock(&install_dir)?;
         let asset = format!("apache-groovy-binary-{version}.zip");
         let asset_url = format!("{DIST_BASE}/{version}/distribution/{asset}");
         let sha_url = format!("{asset_url}.sha256");
@@ -198,35 +190,11 @@ impl Backend for GroovyBackend {
     }
 
     fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
-        let paths = paths()?;
-        let dir = groovy_root(&paths, version);
-        if !dir.exists() && !dir.is_symlink() {
-            bail!("groovy {version} is not installed via qusp");
-        }
-        std::fs::remove_file(&dir)
-            .or_else(|_| std::fs::remove_dir_all(&dir))
-            .with_context(|| format!("remove {}", dir.display()))?;
-        Ok(())
+        common::uninstall_version("groovy", version)
     }
 
     fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
-        let paths = paths()?;
-        let dir = paths.data.join("groovy");
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&dir)? {
-            let e = e?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            // Skip the install lock files written by `StoreLock::acquire`.
-            if name.ends_with(".qusp-lock") {
-                continue;
-            }
-            out.push(name);
-        }
-        out.sort_by(|a, b| version_cmp(b, a));
-        Ok(out)
+        common::list_installed_versions("groovy")
     }
 
     async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
@@ -238,7 +206,7 @@ impl Backend for GroovyBackend {
             .await
             .context("fetch archive.apache.org/dist/groovy/")?;
         let mut versions = parse_apache_dir_versions(&body);
-        versions.sort_by(|a, b| version_cmp(b, a));
+        versions.sort_by(|a, b| common::version_cmp(b, a));
         versions.dedup();
         Ok(versions)
     }
@@ -248,8 +216,8 @@ impl Backend for GroovyBackend {
     }
 
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
-        let paths = paths()?;
-        let root = groovy_root(&paths, version);
+        let paths = common::qusp_paths()?;
+        let root = common::lang_root(&paths, "groovy", version);
         let mut env = std::collections::BTreeMap::new();
         env.insert("GROOVY_HOME".into(), root.to_string_lossy().into_owned());
         Ok(RunEnv {
@@ -337,21 +305,6 @@ fn looks_like_version(s: &str) -> bool {
     }
 }
 
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    fn parts(s: &str) -> (u64, u64, u64) {
-        let mut p = s.split('.').map(|x| {
-            let n: String = x.chars().take_while(|c| c.is_ascii_digit()).collect();
-            n.parse::<u64>().unwrap_or(0)
-        });
-        (
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-        )
-    }
-    parts(a).cmp(&parts(b))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,7 +326,7 @@ mod tests {
     #[test]
     fn version_cmp_orders_apache_releases() {
         let mut v = vec!["4.0.22", "3.0.21", "4.0.21", "5.0.0", "2.5.23"];
-        v.sort_by(|a, b| version_cmp(b, a));
+        v.sort_by(|a, b| common::version_cmp(b, a));
         assert_eq!(v, vec!["5.0.0", "4.0.22", "4.0.21", "3.0.21", "2.5.23"]);
     }
 

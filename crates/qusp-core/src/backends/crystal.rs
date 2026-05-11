@@ -11,12 +11,11 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
-use anyv_core::extract::extract_archive;
 use anyv_core::Paths as AnyvPaths;
 use async_trait::async_trait;
 use serde::Deserialize;
-use sha2::Digest;
 
+use super::common;
 use crate::backend::*;
 
 pub struct CrystalBackend;
@@ -26,20 +25,12 @@ const REPO: &str = "crystal-lang/crystal";
 /// Crystal asset slug. macOS is universal (no arch split); Linux splits
 /// by arch. Windows is unsupported by upstream so qusp skips.
 fn host_slug() -> Option<&'static str> {
-    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+    Some(match common::os_arch() {
         ("macos", _) => "darwin-universal",
         ("linux", "x86_64") => "linux-x86_64",
         ("linux", "aarch64") => "linux-aarch64",
         _ => return None,
     })
-}
-
-fn paths() -> Result<AnyvPaths> {
-    AnyvPaths::discover("qusp")
-}
-
-fn crystal_root(p: &AnyvPaths, version: &str) -> PathBuf {
-    p.data.join("crystal").join(version)
 }
 
 #[derive(Debug, Deserialize)]
@@ -96,21 +87,17 @@ impl Backend for CrystalBackend {
         let http = ctx.http;
         let progress = ctx.progress;
 
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         paths.ensure_dirs()?;
-        let install_dir = crystal_root(&paths, version);
-        if install_dir.join("bin").join("crystal").exists() {
-            return Ok(InstallReport {
-                version: version.to_string(),
-                install_dir,
-                already_present: true,
-            });
+        let install_dir = common::lang_root(&paths, "crystal", version);
+        if let Some(report) = common::check_already_installed(&install_dir, "bin/crystal", version)
+        {
+            return Ok(report);
         }
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard =
-            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        let _install_guard = common::acquire_install_lock(&install_dir)?;
         let slug = host_slug()
             .ok_or_else(|| anyhow!("crystal-lang/crystal has no asset for this platform"))?;
 
@@ -143,35 +130,14 @@ impl Backend for CrystalBackend {
             .await
             .with_context(|| format!("download {}", asset.browser_download_url))?;
         task.finish(format!("downloaded crystal {version}"));
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(&bytes);
-        let actual = hex::encode(hasher.finalize());
-        if !expected_sha.eq_ignore_ascii_case(&actual) {
-            bail!(
-                "sha256 mismatch for {}: expected {expected_sha}, got {actual}",
-                asset.name
-            );
-        }
+        common::verify_sha256(&bytes, &expected_sha, &asset.name)?;
 
-        let cache_path = paths.cache.join(&asset.name);
-        anyv_core::paths::ensure_dir(&paths.cache)?;
-        std::fs::write(&cache_path, &bytes)?;
-        let store_dir = paths.store().join(&actual[..16]);
-        if store_dir.exists() {
-            std::fs::remove_dir_all(&store_dir).ok();
-        }
-        anyv_core::paths::ensure_dir(&store_dir)?;
-        extract_archive(&cache_path, &store_dir)?;
-        let _ = std::fs::remove_file(&cache_path);
+        let store_dir = common::stage_to_store(&paths, &bytes, &expected_sha, &asset.name)?;
 
         // Tarball expands to `crystal-{version}-{n}/{bin/, share/, src/}`.
         let inner = find_crystal_top(&store_dir)?;
 
-        if let Some(parent) = install_dir.parent() {
-            anyv_core::paths::ensure_dir(parent)?;
-        }
-        crate::effects::atomic_symlink_swap(&inner, &install_dir)
-            .with_context(|| format!("symlink {} → {}", install_dir.display(), inner.display()))?;
+        common::finalize_install(&inner, &install_dir)?;
 
         Ok(InstallReport {
             version: version.to_string(),
@@ -181,35 +147,11 @@ impl Backend for CrystalBackend {
     }
 
     fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
-        let paths = paths()?;
-        let dir = crystal_root(&paths, version);
-        if !dir.exists() && !dir.is_symlink() {
-            bail!("crystal {version} is not installed via qusp");
-        }
-        std::fs::remove_file(&dir)
-            .or_else(|_| std::fs::remove_dir_all(&dir))
-            .with_context(|| format!("remove {}", dir.display()))?;
-        Ok(())
+        common::uninstall_version("crystal", version)
     }
 
     fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
-        let paths = paths()?;
-        let dir = paths.data.join("crystal");
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&dir)? {
-            let e = e?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            // Skip the install lock files written by `StoreLock::acquire`.
-            if name.ends_with(".qusp-lock") {
-                continue;
-            }
-            out.push(name);
-        }
-        out.sort_by(|a, b| version_cmp(b, a));
-        Ok(out)
+        common::list_installed_versions("crystal")
     }
 
     async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
@@ -228,7 +170,7 @@ impl Backend for CrystalBackend {
             .filter(|r| !r.prerelease)
             .map(|r| r.tag_name)
             .collect();
-        out.sort_by(|a, b| version_cmp(b, a));
+        out.sort_by(|a, b| common::version_cmp(b, a));
         Ok(out)
     }
 
@@ -237,8 +179,8 @@ impl Backend for CrystalBackend {
     }
 
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
-        let paths = paths()?;
-        let root = crystal_root(&paths, version);
+        let paths = common::qusp_paths()?;
+        let root = common::lang_root(&paths, "crystal", version);
         Ok(RunEnv {
             path_prepend: vec![root.join("bin")],
             env: Default::default(),
@@ -285,18 +227,6 @@ fn find_crystal_top(store_dir: &Path) -> Result<PathBuf> {
         "no `bin/crystal` inside extracted archive at {}",
         store_dir.display()
     )
-}
-
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    fn parts(s: &str) -> (u64, u64, u64) {
-        let mut p = s.split('.').map(|x| x.parse::<u64>().unwrap_or(0));
-        (
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-        )
-    }
-    parts(a).cmp(&parts(b))
 }
 
 #[cfg(test)]

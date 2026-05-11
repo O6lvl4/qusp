@@ -33,6 +33,8 @@ use sha2::Digest;
 
 use crate::backend::*;
 
+use super::common;
+
 pub struct JavaBackend;
 
 const FOOJAY_BASE: &str = "https://api.foojay.io/disco/v3.0";
@@ -46,10 +48,6 @@ pub fn registry_lookup(name: &str) -> Option<&'static str> {
     REGISTRY.iter().find(|(k, _)| *k == name).map(|(_, p)| *p)
 }
 
-fn paths() -> Result<AnyvPaths> {
-    AnyvPaths::discover("qusp")
-}
-
 fn java_root(p: &AnyvPaths, version: &str, distribution: &str) -> PathBuf {
     p.data
         .join("java")
@@ -61,7 +59,7 @@ fn tools_root(p: &AnyvPaths) -> PathBuf {
 }
 
 fn foojay_os() -> Option<&'static str> {
-    Some(match std::env::consts::OS {
+    Some(match common::os_arch().0 {
         "macos" => "macos",
         "linux" => "linux",
         "windows" => "windows",
@@ -70,7 +68,7 @@ fn foojay_os() -> Option<&'static str> {
 }
 
 fn foojay_arch() -> Option<&'static str> {
-    Some(match std::env::consts::ARCH {
+    Some(match common::os_arch().1 {
         "x86_64" => "x64",
         "aarch64" => "aarch64",
         _ => return None,
@@ -164,7 +162,7 @@ impl Backend for JavaBackend {
         let http = ctx.http;
         let progress = ctx.progress;
 
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         paths.ensure_dirs()?;
         let distribution = opts
             .distribution
@@ -180,8 +178,7 @@ impl Backend for JavaBackend {
         }
 
         // W1 fix: serialize concurrent installs of the same lang+version+distribution.
-        let _install_guard =
-            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        let _install_guard = common::acquire_install_lock(&install_dir)?;
 
         let os = foojay_os().ok_or_else(|| anyhow!("Foojay has no JDK packaging for this OS"))?;
         let arch = foojay_arch()
@@ -302,7 +299,7 @@ impl Backend for JavaBackend {
     }
 
     fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         // We don't know which distribution was used at uninstall time;
         // remove every install matching this version.
         let dir = paths.data.join("java");
@@ -328,7 +325,7 @@ impl Backend for JavaBackend {
     }
 
     fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         let dir = paths.data.join("java");
         if !dir.exists() {
             return Ok(vec![]);
@@ -409,7 +406,7 @@ impl Backend for JavaBackend {
         toolchain_version: &str,
         resolved: &ResolvedTool,
     ) -> Result<LockedTool> {
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         let bytes = http
             .get_bytes(&resolved.bin)
             .await
@@ -476,7 +473,7 @@ impl Backend for JavaBackend {
         // `version` may or may not embed the distribution prefix
         // ("temurin-21.0.5"). Try the embedded form first; fall back to
         // the default.
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         let candidates: Vec<PathBuf> = if version.contains('-') {
             vec![paths.data.join("java").join(version)]
         } else {
@@ -687,7 +684,7 @@ async fn latest_maven_version(http: &dyn crate::effects::HttpFetcher) -> Result<
         })
         .map(String::from)
         .collect();
-    versions.sort_by(|a, b| version_cmp(b, a));
+    versions.sort_by(|a, b| common::version_cmp(b, a));
     versions
         .into_iter()
         .next()
@@ -704,17 +701,4 @@ async fn latest_gradle_version(http: &dyn crate::effects::HttpFetcher) -> Result
         .await?;
     let r: R = serde_json::from_str(&body).context("parse gradle versions/current")?;
     Ok(r.version)
-}
-
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    fn parts(s: &str) -> (u64, u64, u64, u64) {
-        let mut p = s.split('.').map(|x| x.parse::<u64>().unwrap_or(0));
-        (
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-        )
-    }
-    parts(a).cmp(&parts(b))
 }

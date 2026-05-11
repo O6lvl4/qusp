@@ -8,11 +8,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
-use anyv_core::extract::extract_archive;
 use anyv_core::Paths as AnyvPaths;
 use async_trait::async_trait;
-use sha2::Digest;
 
+use super::common;
 use crate::backend::*;
 
 pub struct AlmideBackend;
@@ -24,21 +23,13 @@ const REPO: &str = "almide/almide";
 /// Upstream uses `${os}-${arch}` with `os ∈ {macos, linux}` and
 /// `arch ∈ {x86_64, aarch64}`. No Windows builds at v0.15.x.
 fn platform() -> Option<(&'static str, &'static str)> {
-    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+    Some(match common::os_arch() {
         ("macos", "aarch64") => ("macos", "aarch64"),
         ("macos", "x86_64") => ("macos", "x86_64"),
         ("linux", "x86_64") => ("linux", "x86_64"),
         ("linux", "aarch64") => ("linux", "aarch64"),
         _ => return None,
     })
-}
-
-fn paths() -> Result<AnyvPaths> {
-    AnyvPaths::discover("qusp")
-}
-
-fn almide_root(p: &AnyvPaths, version: &str) -> PathBuf {
-    p.data.join("almide").join(strip_v(version))
 }
 
 fn strip_v(v: &str) -> &str {
@@ -99,19 +90,16 @@ impl Backend for AlmideBackend {
         };
         let version = resolved.as_str();
 
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         paths.ensure_dirs()?;
-        let install_dir = almide_root(&paths, version);
-        if install_dir.join("bin").join("almide").exists() {
-            return Ok(InstallReport {
-                version: strip_v(version).to_string(),
-                install_dir,
-                already_present: true,
-            });
+        let install_dir = common::lang_root(&paths, "almide", strip_v(version));
+        if let Some(report) =
+            common::check_already_installed(&install_dir, "bin/almide", strip_v(version))
+        {
+            return Ok(report);
         }
 
-        let _install_guard =
-            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        let _install_guard = common::acquire_install_lock(&install_dir)?;
         let (os, arch) =
             platform().ok_or_else(|| anyhow!("almide has no binary for this platform"))?;
         let v_strip = strip_v(version);
@@ -149,23 +137,9 @@ impl Backend for AlmideBackend {
             .with_context(|| format!("download {asset_url}"))?;
         task.finish(format!("downloaded almide {v_strip}"));
 
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(&bytes);
-        let actual = hex::encode(hasher.finalize());
-        if !expected.eq_ignore_ascii_case(&actual) {
-            bail!("sha256 mismatch for {asset}: expected {expected}, got {actual}");
-        }
+        common::verify_sha256(&bytes, &expected, &asset)?;
 
-        let cache_path = paths.cache.join(&asset);
-        anyv_core::paths::ensure_dir(&paths.cache)?;
-        std::fs::write(&cache_path, &bytes)?;
-        let store_dir = paths.store().join(&actual[..16]);
-        if store_dir.exists() {
-            std::fs::remove_dir_all(&store_dir).ok();
-        }
-        anyv_core::paths::ensure_dir(&store_dir)?;
-        extract_archive(&cache_path, &store_dir)?;
-        let _ = std::fs::remove_file(&cache_path);
+        let store_dir = common::stage_to_store(&paths, &bytes, &expected, &asset)?;
 
         // Archive lays out `almide-${os}-${arch}/almide`.
         let almide_bin = store_dir.join(&stem).join("almide");
@@ -192,16 +166,7 @@ impl Backend for AlmideBackend {
         #[cfg(windows)]
         std::fs::copy(&almide_bin, &bin_link)?;
 
-        if let Some(parent) = install_dir.parent() {
-            anyv_core::paths::ensure_dir(parent)?;
-        }
-        crate::effects::atomic_symlink_swap(&store_dir, &install_dir).with_context(|| {
-            format!(
-                "symlink {} → {}",
-                install_dir.display(),
-                store_dir.display()
-            )
-        })?;
+        common::finalize_install(&store_dir, &install_dir)?;
 
         Ok(InstallReport {
             version: v_strip.to_string(),
@@ -211,34 +176,11 @@ impl Backend for AlmideBackend {
     }
 
     fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
-        let paths = paths()?;
-        let dir = almide_root(&paths, version);
-        if !dir.exists() && !dir.is_symlink() {
-            bail!("almide {version} is not installed via qusp");
-        }
-        std::fs::remove_file(&dir)
-            .or_else(|_| std::fs::remove_dir_all(&dir))
-            .with_context(|| format!("remove {}", dir.display()))?;
-        Ok(())
+        common::uninstall_version("almide", version)
     }
 
     fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
-        let paths = paths()?;
-        let dir = paths.data.join("almide");
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&dir)? {
-            let e = e?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.ends_with(".qusp-lock") {
-                continue;
-            }
-            out.push(name);
-        }
-        out.sort_by(|a, b| version_cmp(b, a));
-        Ok(out)
+        common::list_installed_versions("almide")
     }
 
     async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
@@ -257,7 +199,7 @@ impl Backend for AlmideBackend {
             .filter(|r| !r.prerelease)
             .map(|r| strip_v(&r.tag_name).to_string())
             .collect();
-        out.sort_by(|a, b| version_cmp(b, a));
+        out.sort_by(|a, b| common::version_cmp(b, a));
         Ok(out)
     }
 
@@ -279,8 +221,8 @@ impl Backend for AlmideBackend {
     }
 
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
-        let paths = paths()?;
-        let root = almide_root(&paths, version);
+        let paths = common::qusp_paths()?;
+        let root = common::lang_root(&paths, "almide", version);
         Ok(RunEnv {
             path_prepend: vec![root.join("bin")],
             env: std::collections::BTreeMap::new(),
@@ -291,17 +233,4 @@ impl Backend for AlmideBackend {
         use crate::effects::FarmBinary;
         vec![FarmBinary::unversioned("almide")]
     }
-}
-
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    fn parts(s: &str) -> (u64, u64, u64) {
-        let s = s.strip_prefix('v').unwrap_or(s);
-        let mut p = s.split('.').map(|x| x.parse::<u64>().unwrap_or(0));
-        (
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-        )
-    }
-    parts(a).cmp(&parts(b))
 }

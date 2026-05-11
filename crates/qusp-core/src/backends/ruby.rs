@@ -18,6 +18,8 @@ use serde::Deserialize;
 
 use crate::backend::*;
 
+use super::common;
+
 pub struct RubyBackend;
 
 const REPO: &str = "ruby/ruby-builder";
@@ -25,22 +27,13 @@ const REPO: &str = "ruby/ruby-builder";
 // ─── Platform mapping ───────────────────────────────────────────────
 
 fn platform_suffix() -> Option<&'static str> {
-    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+    Some(match common::os_arch() {
         ("macos", "aarch64") => "darwin-arm64",
         ("macos", "x86_64") => "darwin-x64",
         ("linux", "x86_64") => "ubuntu-22.04-x64",
         ("linux", "aarch64") => "ubuntu-22.04-arm64",
         _ => return None,
     })
-}
-
-/// qusp owns Ruby under its own paths (no separate `rv` data dir).
-fn paths() -> Result<AnyvPaths> {
-    AnyvPaths::discover("qusp")
-}
-
-fn ruby_root(p: &AnyvPaths, version: &str) -> PathBuf {
-    p.data.join("ruby").join(version)
 }
 
 // ─── Tool registry ──────────────────────────────────────────────────
@@ -156,20 +149,6 @@ struct GemVersion {
     sha: String,
 }
 
-// ─── Version helpers ────────────────────────────────────────────────
-
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    fn parts(s: &str) -> (u64, u64, u64) {
-        let mut p = s.split('.').map(|x| x.parse::<u64>().unwrap_or(0));
-        (
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-        )
-    }
-    parts(a).cmp(&parts(b))
-}
-
 /// Strip `ruby-` prefix if present (chruby/asdf-style).
 fn clean_version(v: &str) -> String {
     v.trim()
@@ -261,19 +240,14 @@ impl Backend for RubyBackend {
         let http = ctx.http;
         let progress = ctx.progress;
 
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         paths.ensure_dirs()?;
-        let install_dir = ruby_root(&paths, version);
-        if install_dir.join("bin").join("ruby").exists() {
-            return Ok(InstallReport {
-                version: version.to_string(),
-                install_dir,
-                already_present: true,
-            });
+        let install_dir = common::lang_root(&paths, "ruby", version);
+        if let Some(report) = common::check_already_installed(&install_dir, "bin/ruby", version) {
+            return Ok(report);
         }
 
-        let _install_guard =
-            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        let _install_guard = common::acquire_install_lock(&install_dir)?;
 
         let platform = platform_suffix()
             .ok_or_else(|| anyhow!("ruby-builder has no prebuilt for this platform"))?;
@@ -343,51 +317,11 @@ impl Backend for RubyBackend {
     }
 
     fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
-        let paths = paths()?;
-        let dir = ruby_root(&paths, version);
-        if !dir.exists() && !dir.is_symlink() {
-            bail!("ruby {version} is not installed via qusp");
-        }
-        // Remove symlink (or dir) and the underlying store entry if symlinked.
-        if dir.is_symlink() {
-            let target = std::fs::read_link(&dir).ok();
-            std::fs::remove_file(&dir)
-                .with_context(|| format!("remove symlink {}", dir.display()))?;
-            if let Some(t) = target {
-                // Walk up to find the store slot (hash-prefixed parent).
-                if let Some(store_slot) = t
-                    .ancestors()
-                    .find(|a| a.parent().map(|p| p.ends_with("store")).unwrap_or(false))
-                {
-                    std::fs::remove_dir_all(store_slot).ok();
-                }
-            }
-        } else {
-            std::fs::remove_dir_all(&dir).with_context(|| format!("remove {}", dir.display()))?;
-        }
-        Ok(())
+        common::uninstall_version("ruby", version)
     }
 
     fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
-        let paths = paths()?;
-        let dir = paths.data.join("ruby");
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&dir)? {
-            let e = e?;
-            let n = e.file_name().to_string_lossy().to_string();
-            if n.chars()
-                .next()
-                .map(|c| c.is_ascii_digit())
-                .unwrap_or(false)
-            {
-                out.push(n);
-            }
-        }
-        out.sort_by(|a, b| version_cmp(b, a));
-        Ok(out)
+        common::list_installed_versions("ruby")
     }
 
     async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
@@ -406,7 +340,7 @@ impl Backend for RubyBackend {
                 Some(v.to_string())
             })
             .collect();
-        out.sort_by(|a, b| version_cmp(b, a));
+        out.sort_by(|a, b| common::version_cmp(b, a));
         Ok(out)
     }
 
@@ -491,8 +425,8 @@ impl Backend for RubyBackend {
         toolchain_version: &str,
         resolved: &ResolvedTool,
     ) -> Result<LockedTool> {
-        let paths = paths()?;
-        let ruby_dir = ruby_root(&paths, toolchain_version);
+        let paths = common::qusp_paths()?;
+        let ruby_dir = common::lang_root(&paths, "ruby", toolchain_version);
         let gem_bin = ruby_dir.join("bin").join("gem");
         if !gem_bin.exists() {
             bail!(
@@ -561,7 +495,7 @@ impl Backend for RubyBackend {
     }
 
     fn tool_bin_path(&self, _: &AnyvPaths, locked: &LockedTool) -> PathBuf {
-        let paths = match paths() {
+        let paths = match common::qusp_paths() {
             Ok(p) => p,
             Err(_) => return PathBuf::from(&locked.bin),
         };
@@ -571,8 +505,8 @@ impl Backend for RubyBackend {
     }
 
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
-        let paths = paths()?;
-        let root = ruby_root(&paths, version);
+        let paths = common::qusp_paths()?;
+        let root = common::lang_root(&paths, "ruby", version);
         // ruby-builder binaries have $LOAD_PATH baked into the binary at
         // compile time. Override via RUBYLIB so stdlib + extensions resolve.
         let lib = root.join("lib");

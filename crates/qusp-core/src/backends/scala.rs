@@ -41,20 +41,14 @@ use sha2::Digest;
 
 use crate::backend::*;
 
+use super::common;
+
 pub struct ScalaBackend;
 
 const REPO: &str = "scala/scala3";
 
-fn paths() -> Result<AnyvPaths> {
-    AnyvPaths::discover("qusp")
-}
-
-fn scala_root(p: &AnyvPaths, version: &str) -> PathBuf {
-    p.data.join("scala").join(version)
-}
-
 fn host_triple() -> Option<&'static str> {
-    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+    Some(match common::os_arch() {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         ("macos", "x86_64") => "x86_64-apple-darwin",
         ("linux", "x86_64") => "x86_64-pc-linux",
@@ -107,21 +101,16 @@ impl Backend for ScalaBackend {
         let http = ctx.http;
         let progress = ctx.progress;
 
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         paths.ensure_dirs()?;
-        let install_dir = scala_root(&paths, version);
-        if install_dir.join("bin").join("scala").exists() {
-            return Ok(InstallReport {
-                version: version.to_string(),
-                install_dir,
-                already_present: true,
-            });
+        let install_dir = common::lang_root(&paths, "scala", version);
+        if let Some(report) = common::check_already_installed(&install_dir, "bin/scala", version) {
+            return Ok(report);
         }
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard =
-            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        let _install_guard = common::acquire_install_lock(&install_dir)?;
         let triple = host_triple().ok_or_else(|| {
             anyhow!(
                 "Scala 3 is not published for {}-{} by upstream",
@@ -208,35 +197,11 @@ impl Backend for ScalaBackend {
     }
 
     fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
-        let paths = paths()?;
-        let dir = scala_root(&paths, version);
-        if !dir.exists() && !dir.is_symlink() {
-            bail!("scala {version} is not installed via qusp");
-        }
-        std::fs::remove_file(&dir)
-            .or_else(|_| std::fs::remove_dir_all(&dir))
-            .with_context(|| format!("remove {}", dir.display()))?;
-        Ok(())
+        common::uninstall_version("scala", version)
     }
 
     fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
-        let paths = paths()?;
-        let dir = paths.data.join("scala");
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&dir)? {
-            let e = e?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            // Skip the install lock files written by `StoreLock::acquire`.
-            if name.ends_with(".qusp-lock") {
-                continue;
-            }
-            out.push(name);
-        }
-        out.sort_by(|a, b| version_cmp(b, a));
-        Ok(out)
+        common::list_installed_versions("scala")
     }
 
     async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
@@ -256,7 +221,7 @@ impl Backend for ScalaBackend {
             .filter(|r| supports_sidecar(&r.tag_name))
             .map(|r| r.tag_name.trim_start_matches('v').to_string())
             .collect();
-        out.sort_by(|a, b| version_cmp(b, a));
+        out.sort_by(|a, b| common::version_cmp(b, a));
         Ok(out)
     }
 
@@ -265,8 +230,8 @@ impl Backend for ScalaBackend {
     }
 
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
-        let paths = paths()?;
-        let root = scala_root(&paths, version);
+        let paths = common::qusp_paths()?;
+        let root = common::lang_root(&paths, "scala", version);
         let mut env = std::collections::BTreeMap::new();
         env.insert("SCALA_HOME".into(), root.to_string_lossy().into_owned());
         Ok(RunEnv {
@@ -306,22 +271,6 @@ fn supports_sidecar(tag: &str) -> bool {
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(0);
     (major, minor) >= (3, 7)
-}
-
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    fn parts(s: &str) -> (u64, u64, u64) {
-        let s = s.trim_start_matches('v');
-        let mut p = s.split('.').map(|x| {
-            let n: String = x.chars().take_while(|c| c.is_ascii_digit()).collect();
-            n.parse::<u64>().unwrap_or(0)
-        });
-        (
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-        )
-    }
-    parts(a).cmp(&parts(b))
 }
 
 #[cfg(test)]
@@ -376,7 +325,7 @@ mod tests {
     #[test]
     fn version_cmp_orders_scala_releases() {
         let mut v = vec!["3.5.2", "3.8.3", "3.7.3", "3.7.0", "3.10.0"];
-        v.sort_by(|a, b| version_cmp(b, a));
+        v.sort_by(|a, b| common::version_cmp(b, a));
         assert_eq!(v, vec!["3.10.0", "3.8.3", "3.7.3", "3.7.0", "3.5.2"]);
     }
 }

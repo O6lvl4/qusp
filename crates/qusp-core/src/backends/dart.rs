@@ -33,11 +33,10 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
-use anyv_core::extract::extract_archive;
 use anyv_core::Paths as AnyvPaths;
 use async_trait::async_trait;
-use sha2::Digest;
 
+use super::common;
 use crate::backend::*;
 
 pub struct DartBackend;
@@ -45,16 +44,8 @@ pub struct DartBackend;
 const DIST_BASE: &str = "https://storage.googleapis.com/dart-archive/channels/stable/release";
 const GH_REPO: &str = "dart-lang/sdk";
 
-fn paths() -> Result<AnyvPaths> {
-    AnyvPaths::discover("qusp")
-}
-
-fn dart_root(p: &AnyvPaths, version: &str) -> PathBuf {
-    p.data.join("dart").join(version)
-}
-
 fn host_triple() -> Option<&'static str> {
-    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+    Some(match common::os_arch() {
         ("macos", "aarch64") => "macos-arm64",
         ("macos", "x86_64") => "macos-x64",
         ("linux", "x86_64") => "linux-x64",
@@ -104,21 +95,16 @@ impl Backend for DartBackend {
         let http = ctx.http;
         let progress = ctx.progress;
 
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         paths.ensure_dirs()?;
-        let install_dir = dart_root(&paths, version);
-        if install_dir.join("bin").join("dart").exists() {
-            return Ok(InstallReport {
-                version: version.to_string(),
-                install_dir,
-                already_present: true,
-            });
+        let install_dir = common::lang_root(&paths, "dart", version);
+        if let Some(report) = common::check_already_installed(&install_dir, "bin/dart", version) {
+            return Ok(report);
         }
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard =
-            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        let _install_guard = common::acquire_install_lock(&install_dir)?;
         let triple = host_triple().ok_or_else(|| {
             anyhow!(
                 "Dart SDK is not published for {}-{} by upstream",
@@ -143,23 +129,9 @@ impl Backend for DartBackend {
             .await
             .with_context(|| format!("download {asset_url}"))?;
         task.finish(format!("downloaded dart {version}"));
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(&bytes);
-        let actual = hex::encode(hasher.finalize());
-        if !expected.eq_ignore_ascii_case(&actual) {
-            bail!("sha256 mismatch for {asset}: expected {expected}, got {actual}");
-        }
+        common::verify_sha256(&bytes, &expected, &asset)?;
 
-        let cache_path = paths.cache.join(&asset);
-        anyv_core::paths::ensure_dir(&paths.cache)?;
-        std::fs::write(&cache_path, &bytes)?;
-        let store_dir = paths.store().join(&actual[..16]);
-        if store_dir.exists() {
-            std::fs::remove_dir_all(&store_dir).ok();
-        }
-        anyv_core::paths::ensure_dir(&store_dir)?;
-        extract_archive(&cache_path, &store_dir)?;
-        let _ = std::fs::remove_file(&cache_path);
+        let store_dir = common::stage_to_store(&paths, &bytes, &expected, &asset)?;
 
         let dart_top = store_dir.join("dart-sdk");
         if !dart_top.join("bin").join("dart").is_file() {
@@ -185,12 +157,7 @@ impl Backend for DartBackend {
             }
         }
 
-        if let Some(parent) = install_dir.parent() {
-            anyv_core::paths::ensure_dir(parent)?;
-        }
-        crate::effects::atomic_symlink_swap(&dart_top, &install_dir).with_context(|| {
-            format!("symlink {} → {}", install_dir.display(), dart_top.display())
-        })?;
+        common::finalize_install(&dart_top, &install_dir)?;
 
         Ok(InstallReport {
             version: version.to_string(),
@@ -200,35 +167,11 @@ impl Backend for DartBackend {
     }
 
     fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
-        let paths = paths()?;
-        let dir = dart_root(&paths, version);
-        if !dir.exists() && !dir.is_symlink() {
-            bail!("dart {version} is not installed via qusp");
-        }
-        std::fs::remove_file(&dir)
-            .or_else(|_| std::fs::remove_dir_all(&dir))
-            .with_context(|| format!("remove {}", dir.display()))?;
-        Ok(())
+        common::uninstall_version("dart", version)
     }
 
     fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
-        let paths = paths()?;
-        let dir = paths.data.join("dart");
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&dir)? {
-            let e = e?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            // Skip the install lock files written by `StoreLock::acquire`.
-            if name.ends_with(".qusp-lock") {
-                continue;
-            }
-            out.push(name);
-        }
-        out.sort_by(|a, b| version_cmp(b, a));
-        Ok(out)
+        common::list_installed_versions("dart")
     }
 
     async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
@@ -250,7 +193,7 @@ impl Backend for DartBackend {
             .filter(|r| !r.prerelease)
             .map(|r| r.tag_name.trim_start_matches('v').to_string())
             .collect();
-        out.sort_by(|a, b| version_cmp(b, a));
+        out.sort_by(|a, b| common::version_cmp(b, a));
         Ok(out)
     }
 
@@ -259,8 +202,8 @@ impl Backend for DartBackend {
     }
 
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
-        let paths = paths()?;
-        let root = dart_root(&paths, version);
+        let paths = common::qusp_paths()?;
+        let root = common::lang_root(&paths, "dart", version);
         let mut env = std::collections::BTreeMap::new();
         env.insert("DART_SDK".into(), root.to_string_lossy().into_owned());
         Ok(RunEnv {
@@ -279,22 +222,6 @@ impl Backend for DartBackend {
 /// for text-mode). Pull the first whitespace token.
 fn parse_sha256sum_sidecar(s: &str) -> Option<String> {
     s.split_whitespace().next().map(|x| x.to_string())
-}
-
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    fn parts(s: &str) -> (u64, u64, u64) {
-        let s = s.trim_start_matches('v');
-        let mut p = s.split('.').map(|x| {
-            let n: String = x.chars().take_while(|c| c.is_ascii_digit()).collect();
-            n.parse::<u64>().unwrap_or(0)
-        });
-        (
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-        )
-    }
-    parts(a).cmp(&parts(b))
 }
 
 #[cfg(test)]
@@ -351,7 +278,7 @@ mod tests {
     #[test]
     fn version_cmp_orders_dart_releases() {
         let mut v = vec!["3.5.4", "3.11.5", "3.5.0", "2.19.6", "3.5.0-1.2.beta"];
-        v.sort_by(|a, b| version_cmp(b, a));
+        v.sort_by(|a, b| common::version_cmp(b, a));
         assert_eq!(
             v,
             vec!["3.11.5", "3.5.4", "3.5.0", "3.5.0-1.2.beta", "2.19.6"]

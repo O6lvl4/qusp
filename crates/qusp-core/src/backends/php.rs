@@ -18,25 +18,19 @@ use sha2::Digest;
 
 use crate::backend::*;
 
+use super::common;
+
 pub struct PhpBackend;
 
 const REPO: &str = "O6lvl4/php-build-standalone";
 
 fn target_triple() -> Option<&'static str> {
-    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+    Some(match common::os_arch() {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         ("macos", "x86_64") => "x86_64-apple-darwin",
         ("linux", "x86_64") => "x86_64-unknown-linux-musl",
         _ => return None,
     })
-}
-
-fn paths() -> Result<AnyvPaths> {
-    AnyvPaths::discover("qusp")
-}
-
-fn php_root(p: &AnyvPaths, version: &str) -> PathBuf {
-    p.data.join("php").join(version)
 }
 
 #[async_trait]
@@ -80,19 +74,14 @@ impl Backend for PhpBackend {
         let http = ctx.http;
         let progress = ctx.progress;
 
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         paths.ensure_dirs()?;
-        let install_dir = php_root(&paths, version);
-        if install_dir.join("bin").join("php").exists() {
-            return Ok(InstallReport {
-                version: version.to_string(),
-                install_dir,
-                already_present: true,
-            });
+        let install_dir = common::lang_root(&paths, "php", version);
+        if let Some(report) = common::check_already_installed(&install_dir, "bin/php", version) {
+            return Ok(report);
         }
 
-        let _install_guard =
-            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        let _install_guard = common::acquire_install_lock(&install_dir)?;
         let triple = target_triple()
             .ok_or_else(|| anyhow!("php-build-standalone has no binary for this platform"))?;
         let tag = format!("php-{version}");
@@ -179,34 +168,11 @@ impl Backend for PhpBackend {
     }
 
     fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
-        let paths = paths()?;
-        let dir = php_root(&paths, version);
-        if !dir.exists() && !dir.is_symlink() {
-            bail!("php {version} is not installed via qusp");
-        }
-        std::fs::remove_file(&dir)
-            .or_else(|_| std::fs::remove_dir_all(&dir))
-            .with_context(|| format!("remove {}", dir.display()))?;
-        Ok(())
+        common::uninstall_version("php", version)
     }
 
     fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
-        let paths = paths()?;
-        let dir = paths.data.join("php");
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&dir)? {
-            let e = e?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.ends_with(".qusp-lock") {
-                continue;
-            }
-            out.push(name);
-        }
-        out.sort_by(|a, b| version_cmp(b, a));
-        Ok(out)
+        common::list_installed_versions("php")
     }
 
     async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
@@ -222,7 +188,7 @@ impl Backend for PhpBackend {
             .into_iter()
             .filter_map(|r| r.tag_name.strip_prefix("php-").map(String::from))
             .collect();
-        out.sort_by(|a, b| version_cmp(b, a));
+        out.sort_by(|a, b| common::version_cmp(b, a));
         Ok(out)
     }
 
@@ -244,8 +210,8 @@ impl Backend for PhpBackend {
     }
 
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
-        let paths = paths()?;
-        let root = php_root(&paths, version);
+        let paths = common::qusp_paths()?;
+        let root = common::lang_root(&paths, "php", version);
         Ok(RunEnv {
             path_prepend: vec![root.join("bin")],
             env: std::collections::BTreeMap::new(),
@@ -270,16 +236,4 @@ fn find_php_dir(store_dir: &Path) -> Result<PathBuf> {
         }
     }
     bail!("no php-* directory found inside {}", store_dir.display())
-}
-
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    fn parts(s: &str) -> (u64, u64, u64) {
-        let mut p = s.split('.').map(|x| x.parse::<u64>().unwrap_or(0));
-        (
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-        )
-    }
-    parts(a).cmp(&parts(b))
 }

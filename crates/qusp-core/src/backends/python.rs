@@ -23,6 +23,8 @@ use sha2::Digest;
 
 use crate::backend::*;
 
+use super::common;
+
 pub struct PythonBackend;
 
 const REPO: &str = "astral-sh/python-build-standalone";
@@ -39,22 +41,13 @@ pub(crate) struct GhAsset {
 }
 
 fn target_triple() -> Option<&'static str> {
-    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+    Some(match common::os_arch() {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         ("macos", "x86_64") => "x86_64-apple-darwin",
         ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
         ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
         _ => return None,
     })
-}
-
-/// qusp owns Python under its own paths since there's no standalone `pv` tool.
-fn paths() -> Result<AnyvPaths> {
-    AnyvPaths::discover("qusp")
-}
-
-fn python_root(p: &AnyvPaths, version: &str) -> PathBuf {
-    p.data.join("python").join(version)
 }
 
 #[async_trait]
@@ -95,21 +88,17 @@ impl Backend for PythonBackend {
         let http = ctx.http;
         let progress = ctx.progress;
 
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         paths.ensure_dirs()?;
-        let install_dir = python_root(&paths, version);
-        if install_dir.join("bin").join("python3").exists() {
-            return Ok(InstallReport {
-                version: version.to_string(),
-                install_dir,
-                already_present: true,
-            });
+        let install_dir = common::lang_root(&paths, "python", version);
+        if let Some(report) = common::check_already_installed(&install_dir, "bin/python3", version)
+        {
+            return Ok(report);
         }
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard =
-            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        let _install_guard = common::acquire_install_lock(&install_dir)?;
 
         let triple = target_triple()
             .ok_or_else(|| anyhow!("python-build-standalone has no asset for this platform"))?;
@@ -218,37 +207,11 @@ impl Backend for PythonBackend {
     }
 
     fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
-        let paths = paths()?;
-        let dir = python_root(&paths, version);
-        if !dir.exists() && !dir.is_symlink() {
-            bail!("python {version} is not installed via qusp");
-        }
-        std::fs::remove_file(&dir)
-            .or_else(|_| std::fs::remove_dir_all(&dir))
-            .with_context(|| format!("remove {}", dir.display()))?;
-        Ok(())
+        common::uninstall_version("python", version)
     }
 
     fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
-        let paths = paths()?;
-        let dir = paths.data.join("python");
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&dir)? {
-            let e = e?;
-            let n = e.file_name().to_string_lossy().to_string();
-            if n.chars()
-                .next()
-                .map(|c| c.is_ascii_digit())
-                .unwrap_or(false)
-            {
-                out.push(n);
-            }
-        }
-        out.sort_by(|a, b| version_cmp(b, a));
-        Ok(out)
+        common::list_installed_versions("python")
     }
 
     async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
@@ -267,7 +230,7 @@ impl Backend for PythonBackend {
             }
         }
         let mut out: Vec<String> = seen.into_iter().collect();
-        out.sort_by(|a, b| version_cmp(b, a));
+        out.sort_by(|a, b| common::version_cmp(b, a));
         Ok(out)
     }
 
@@ -289,8 +252,8 @@ impl Backend for PythonBackend {
     }
 
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
-        let paths = paths()?;
-        let root = python_root(&paths, version);
+        let paths = common::qusp_paths()?;
+        let root = common::lang_root(&paths, "python", version);
         Ok(RunEnv {
             path_prepend: vec![root.join("bin")],
             env: Default::default(),
@@ -318,18 +281,6 @@ impl Backend for PythonBackend {
         ]);
         bins
     }
-}
-
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    fn parts(s: &str) -> (u64, u64, u64) {
-        let mut p = s.split('.').map(|x| x.parse::<u64>().unwrap_or(0));
-        (
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-        )
-    }
-    parts(a).cmp(&parts(b))
 }
 
 /// `"3.13.0"` → `"3.13"`. `"3.13"` → `"3.13"`.

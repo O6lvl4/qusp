@@ -56,17 +56,10 @@ use anyv_core::Paths as AnyvPaths;
 use async_trait::async_trait;
 use sha2::Digest;
 
+use super::common;
 use crate::backend::*;
 
 pub struct LuaBackend;
-
-fn paths() -> Result<AnyvPaths> {
-    AnyvPaths::discover("qusp")
-}
-
-fn lua_root(p: &AnyvPaths, version: &str) -> PathBuf {
-    p.data.join("lua").join(version)
-}
 
 /// Curated version → sha256 table. Hashes verified by hand against
 /// lua.org/ftp during qusp release prep. To add a new version,
@@ -85,7 +78,7 @@ fn known_sha256(version: &str) -> Option<&'static str> {
 }
 
 fn lua_makefile_plat() -> Option<&'static str> {
-    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+    Some(match common::os_arch() {
         ("macos", _) => "macosx",
         ("linux", _) => "linux",
         ("freebsd", _) => "bsd",
@@ -136,9 +129,9 @@ impl Backend for LuaBackend {
         let http = ctx.http;
         let progress = ctx.progress;
 
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         paths.ensure_dirs()?;
-        let install_dir = lua_root(&paths, version);
+        let install_dir = common::lang_root(&paths, "lua", version);
         if install_dir.join("bin").join("lua").exists() {
             return Ok(InstallReport {
                 version: version.to_string(),
@@ -149,8 +142,7 @@ impl Backend for LuaBackend {
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard =
-            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        let _install_guard = common::acquire_install_lock(&install_dir)?;
         let plat = lua_makefile_plat().ok_or_else(|| {
             anyhow!(
                 "Lua source build requires a known Makefile platform; \
@@ -272,35 +264,11 @@ impl Backend for LuaBackend {
     }
 
     fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
-        let paths = paths()?;
-        let dir = lua_root(&paths, version);
-        if !dir.exists() && !dir.is_symlink() {
-            bail!("lua {version} is not installed via qusp");
-        }
-        std::fs::remove_file(&dir)
-            .or_else(|_| std::fs::remove_dir_all(&dir))
-            .with_context(|| format!("remove {}", dir.display()))?;
-        Ok(())
+        common::uninstall_version("lua", version)
     }
 
     fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
-        let paths = paths()?;
-        let dir = paths.data.join("lua");
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&dir)? {
-            let e = e?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            // Skip the install lock files written by `StoreLock::acquire`.
-            if name.ends_with(".qusp-lock") {
-                continue;
-            }
-            out.push(name);
-        }
-        out.sort_by(|a, b| version_cmp(b, a));
-        Ok(out)
+        common::list_installed_versions("lua")
     }
 
     async fn list_remote(&self, _http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
@@ -316,7 +284,7 @@ impl Backend for LuaBackend {
             "5.4.5".to_string(),
             "5.4.4".to_string(),
         ];
-        out.sort_by(|a, b| version_cmp(b, a));
+        out.sort_by(|a, b| common::version_cmp(b, a));
         Ok(out)
     }
 
@@ -325,8 +293,8 @@ impl Backend for LuaBackend {
     }
 
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
-        let paths = paths()?;
-        let root = lua_root(&paths, version);
+        let paths = common::qusp_paths()?;
+        let root = common::lang_root(&paths, "lua", version);
         let mut env = std::collections::BTreeMap::new();
         env.insert("LUA_DIR".into(), root.to_string_lossy().into_owned());
         Ok(RunEnv {
@@ -388,22 +356,6 @@ fn run_lua_build(src_dir: &Path, prefix: &Path, plat: &str) -> Result<()> {
     Ok(())
 }
 
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    fn parts(s: &str) -> (u64, u64, u64) {
-        let s = s.trim_start_matches('v');
-        let mut p = s.split('.').map(|x| {
-            let n: String = x.chars().take_while(|c| c.is_ascii_digit()).collect();
-            n.parse::<u64>().unwrap_or(0)
-        });
-        (
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-        )
-    }
-    parts(a).cmp(&parts(b))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -454,7 +406,7 @@ mod tests {
     #[test]
     fn version_cmp_orders_lua_releases() {
         let mut v = vec!["5.4.7", "5.5.0", "5.4.5", "5.4.8", "5.3.6"];
-        v.sort_by(|a, b| version_cmp(b, a));
+        v.sort_by(|a, b| common::version_cmp(b, a));
         assert_eq!(v, vec!["5.5.0", "5.4.8", "5.4.7", "5.4.5", "5.3.6"]);
     }
 }

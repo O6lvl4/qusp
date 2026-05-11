@@ -33,19 +33,12 @@ use anyv_core::Paths as AnyvPaths;
 use async_trait::async_trait;
 use sha2::Digest;
 
+use super::common;
 use crate::backend::*;
 
 pub struct KotlinBackend;
 
 const REPO: &str = "JetBrains/kotlin";
-
-fn paths() -> Result<AnyvPaths> {
-    AnyvPaths::discover("qusp")
-}
-
-fn kotlin_root(p: &AnyvPaths, version: &str) -> PathBuf {
-    p.data.join("kotlin").join(strip_v(version))
-}
 
 fn strip_v(v: &str) -> &str {
     v.strip_prefix('v').unwrap_or(v)
@@ -95,9 +88,9 @@ impl Backend for KotlinBackend {
         let http = ctx.http;
         let progress = ctx.progress;
 
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         paths.ensure_dirs()?;
-        let install_dir = kotlin_root(&paths, version);
+        let install_dir = common::lang_root(&paths, "kotlin", strip_v(version));
         if install_dir.join("bin").join("kotlinc").exists() {
             return Ok(InstallReport {
                 version: strip_v(version).to_string(),
@@ -108,8 +101,7 @@ impl Backend for KotlinBackend {
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard =
-            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        let _install_guard = common::acquire_install_lock(&install_dir)?;
         let v = strip_v(version);
         let tag = format!("v{v}");
         let asset = format!("kotlin-compiler-{v}.zip");
@@ -195,35 +187,11 @@ impl Backend for KotlinBackend {
     }
 
     fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
-        let paths = paths()?;
-        let dir = kotlin_root(&paths, version);
-        if !dir.exists() && !dir.is_symlink() {
-            bail!("kotlin {version} is not installed via qusp");
-        }
-        std::fs::remove_file(&dir)
-            .or_else(|_| std::fs::remove_dir_all(&dir))
-            .with_context(|| format!("remove {}", dir.display()))?;
-        Ok(())
+        common::uninstall_version("kotlin", strip_v(version))
     }
 
     fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
-        let paths = paths()?;
-        let dir = paths.data.join("kotlin");
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&dir)? {
-            let e = e?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            // Skip the install lock files written by `StoreLock::acquire`.
-            if name.ends_with(".qusp-lock") {
-                continue;
-            }
-            out.push(name);
-        }
-        out.sort_by(|a, b| version_cmp(b, a));
-        Ok(out)
+        common::list_installed_versions("kotlin")
     }
 
     async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
@@ -242,7 +210,7 @@ impl Backend for KotlinBackend {
             .filter(|r| !r.prerelease)
             .map(|r| strip_v(&r.tag_name).to_string())
             .collect();
-        out.sort_by(|a, b| version_cmp(b, a));
+        out.sort_by(|a, b| common::version_cmp(b, a));
         Ok(out)
     }
 
@@ -265,8 +233,8 @@ impl Backend for KotlinBackend {
     }
 
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
-        let paths = paths()?;
-        let root = kotlin_root(&paths, version);
+        let paths = common::qusp_paths()?;
+        let root = common::lang_root(&paths, "kotlin", strip_v(version));
         let mut env = std::collections::BTreeMap::new();
         env.insert("KOTLIN_HOME".into(), root.to_string_lossy().into_owned());
         Ok(RunEnv {
@@ -306,17 +274,4 @@ fn patch_kotlinc_spaces(kotlinc_dir: &Path) -> Result<()> {
         std::fs::write(&script, fixed)?;
     }
     Ok(())
-}
-
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    fn parts(s: &str) -> (u64, u64, u64) {
-        let s = s.strip_prefix('v').unwrap_or(s);
-        let mut p = s.split('.').map(|x| x.parse::<u64>().unwrap_or(0));
-        (
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-        )
-    }
-    parts(a).cmp(&parts(b))
 }

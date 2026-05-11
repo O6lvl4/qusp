@@ -25,6 +25,8 @@ use sha2::Digest;
 
 use crate::backend::*;
 
+use super::common;
+
 pub struct NodeBackend;
 
 const DIST_BASE: &str = "https://nodejs.org/dist";
@@ -49,17 +51,13 @@ pub fn registry_lookup(name: &str) -> Option<&'static str> {
 }
 
 fn target_triple() -> Option<&'static str> {
-    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+    Some(match common::os_arch() {
         ("macos", "aarch64") => "darwin-arm64",
         ("macos", "x86_64") => "darwin-x64",
         ("linux", "x86_64") => "linux-x64",
         ("linux", "aarch64") => "linux-arm64",
         _ => return None,
     })
-}
-
-fn paths() -> Result<AnyvPaths> {
-    AnyvPaths::discover("qusp")
 }
 
 fn node_root(p: &AnyvPaths, version: &str) -> PathBuf {
@@ -146,21 +144,18 @@ impl Backend for NodeBackend {
         let http = ctx.http;
         let progress = ctx.progress;
 
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         paths.ensure_dirs()?;
         let install_dir = node_root(&paths, version);
-        if install_dir.join("bin").join("node").exists() {
-            return Ok(InstallReport {
-                version: strip_v(version).to_string(),
-                install_dir,
-                already_present: true,
-            });
+        if let Some(mut report) = common::check_already_installed(&install_dir, "bin/node", version)
+        {
+            report.version = strip_v(version).to_string();
+            return Ok(report);
         }
 
         // W1 fix: serialize concurrent installs of the same lang+version.
         // Held until install completes; different versions / langs unaffected.
-        let _install_guard =
-            crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
+        let _install_guard = common::acquire_install_lock(&install_dir)?;
         let triple =
             target_triple().ok_or_else(|| anyhow!("nodejs.org has no asset for this platform"))?;
         let v = with_v(version);
@@ -226,35 +221,11 @@ impl Backend for NodeBackend {
     }
 
     fn uninstall(&self, _: &AnyvPaths, version: &str) -> Result<()> {
-        let paths = paths()?;
-        let dir = node_root(&paths, version);
-        if !dir.exists() && !dir.is_symlink() {
-            bail!("node {version} is not installed via qusp");
-        }
-        std::fs::remove_file(&dir)
-            .or_else(|_| std::fs::remove_dir_all(&dir))
-            .with_context(|| format!("remove {}", dir.display()))?;
-        Ok(())
+        common::uninstall_version("node", version)
     }
 
     fn list_installed(&self, _: &AnyvPaths) -> Result<Vec<String>> {
-        let paths = paths()?;
-        let dir = paths.data.join("node");
-        if !dir.exists() {
-            return Ok(vec![]);
-        }
-        let mut out = Vec::new();
-        for e in std::fs::read_dir(&dir)? {
-            let e = e?;
-            let name = e.file_name().to_string_lossy().into_owned();
-            // Skip the install lock files written by `StoreLock::acquire`.
-            if name.ends_with(".qusp-lock") {
-                continue;
-            }
-            out.push(name);
-        }
-        out.sort_by(|a, b| version_cmp(b, a));
-        Ok(out)
+        common::list_installed_versions("node")
     }
 
     async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
@@ -317,7 +288,7 @@ impl Backend for NodeBackend {
         toolchain_version: &str,
         resolved: &ResolvedTool,
     ) -> Result<LockedTool> {
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         // Refetch the packument to get the canonical tarball URL.
         let url = format!("{}/{}/{}", NPM_REGISTRY, resolved.package, resolved.version);
         let body = http
@@ -382,7 +353,7 @@ impl Backend for NodeBackend {
     }
 
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
-        let paths = paths()?;
+        let paths = common::qusp_paths()?;
         let root = node_root(&paths, version);
         Ok(RunEnv {
             path_prepend: vec![root.join("bin")],
@@ -492,19 +463,4 @@ fn integrity_hex_prefix(integrity: &str) -> Option<String> {
     let (_, b64) = integrity.split_whitespace().next()?.split_once('-')?;
     let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
     Some(hex::encode(&bytes[..8.min(bytes.len())]))
-}
-
-fn version_cmp(a: &str, b: &str) -> std::cmp::Ordering {
-    fn parts(s: &str) -> (u64, u64, u64) {
-        let s = s.strip_prefix('v').unwrap_or(s);
-        // strip "(LTS)" suffix from list_remote output if it's used as a key
-        let s = s.split_whitespace().next().unwrap_or(s);
-        let mut p = s.split('.').map(|x| x.parse::<u64>().unwrap_or(0));
-        (
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-            p.next().unwrap_or(0),
-        )
-    }
-    parts(a).cmp(&parts(b))
 }
