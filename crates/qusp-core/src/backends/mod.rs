@@ -2,10 +2,10 @@
 //! download / verify / install logic. No subprocess wrappers around
 //! competing version managers.
 
-pub mod common;
 pub mod almide;
 pub mod bun;
 pub mod clojure;
+pub mod common;
 pub mod crystal;
 pub mod dart;
 pub mod deno;

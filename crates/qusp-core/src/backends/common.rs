@@ -76,9 +76,7 @@ pub fn check_already_installed(
 }
 
 /// Acquire the install lock for a given install_dir.
-pub fn acquire_install_lock(
-    install_dir: &Path,
-) -> Result<crate::effects::StoreLock> {
+pub fn acquire_install_lock(install_dir: &Path) -> Result<crate::effects::StoreLock> {
     crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(install_dir))
 }
 
@@ -184,11 +182,6 @@ pub fn finalize_install(source: &Path, install_dir: &Path) -> Result<()> {
     if let Some(parent) = install_dir.parent() {
         anyv_core::paths::ensure_dir(parent)?;
     }
-    crate::effects::atomic_symlink_swap(source, install_dir).with_context(|| {
-        format!(
-            "symlink {} → {}",
-            install_dir.display(),
-            source.display()
-        )
-    })
+    crate::effects::atomic_symlink_swap(source, install_dir)
+        .with_context(|| format!("symlink {} → {}", install_dir.display(), source.display()))
 }

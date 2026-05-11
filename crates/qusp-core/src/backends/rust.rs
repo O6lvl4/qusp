@@ -12,8 +12,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use anyv_core::Paths as AnyvPaths;
 use async_trait::async_trait;
 
-use crate::backend::*;
 use super::common;
+use crate::backend::*;
 
 pub struct RustBackend;
 
@@ -98,7 +98,8 @@ impl Backend for RustBackend {
         let asset_url = format!("{DIST_BASE}/{asset}");
         let sha_url = format!("{asset_url}.sha256");
 
-        let sha_text = ctx.http
+        let sha_text = ctx
+            .http
             .get_text(&sha_url)
             .await
             .with_context(|| format!("fetch {sha_url}"))?;
@@ -109,9 +110,13 @@ impl Backend for RustBackend {
             .to_string();
 
         let bytes = common::download_and_verify(
-            ctx.http, &asset_url, &expected, ctx.progress,
+            ctx.http,
+            &asset_url,
+            &expected,
+            ctx.progress,
             &format!("rust {resolved_version}"),
-        ).await?;
+        )
+        .await?;
 
         let store_dir = common::stage_to_store(&paths, &bytes, &expected, &asset)?;
 

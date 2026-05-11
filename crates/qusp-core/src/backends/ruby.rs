@@ -770,10 +770,7 @@ fn patch_macho_refs_recursive(dir: &Path, old_ref: &str, new_ref: &str) -> Resul
                 .and_then(|e| e.to_str())
                 .map(|e| e == "bundle" || e == "dylib")
                 .unwrap_or(false)
-                || path
-                    .parent()
-                    .map(|p| p.ends_with("bin"))
-                    .unwrap_or(false);
+                || path.parent().map(|p| p.ends_with("bin")).unwrap_or(false);
             if dominated {
                 let _ = Command::new("install_name_tool")
                     .args(["-change", old_ref, new_ref])

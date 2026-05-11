@@ -12,8 +12,8 @@ use anyv_core::Paths as AnyvPaths;
 use async_trait::async_trait;
 use serde::Deserialize;
 
-use crate::backend::*;
 use super::common;
+use crate::backend::*;
 
 pub struct BunBackend;
 
@@ -94,7 +94,8 @@ impl Backend for BunBackend {
         let asset_url = format!("https://github.com/{REPO}/releases/download/{tag}/{asset}");
         let sums_url = format!("https://github.com/{REPO}/releases/download/{tag}/SHASUMS256.txt");
 
-        let sums_text = ctx.http
+        let sums_text = ctx
+            .http
             .get_text(&sums_url)
             .await
             .with_context(|| format!("fetch {sums_url}"))?;
@@ -102,9 +103,13 @@ impl Backend for BunBackend {
             .ok_or_else(|| anyhow!("no entry for {asset} in SHASUMS256.txt"))?;
 
         let bytes = common::download_and_verify(
-            ctx.http, &asset_url, &expected, ctx.progress,
+            ctx.http,
+            &asset_url,
+            &expected,
+            ctx.progress,
             &format!("bun {version}"),
-        ).await?;
+        )
+        .await?;
 
         let store_dir = common::stage_to_store(&paths, &bytes, &expected, &asset)?;
 

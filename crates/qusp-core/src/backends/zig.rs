@@ -17,8 +17,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use sha2::Digest;
 
-use crate::backend::*;
 use super::common;
+use crate::backend::*;
 
 pub struct ZigBackend;
 
@@ -86,7 +86,8 @@ impl Backend for ZigBackend {
 
         let triple =
             target_triple().ok_or_else(|| anyhow!("ziglang.org has no asset for this platform"))?;
-        let body = ctx.http
+        let body = ctx
+            .http
             .get_text(INDEX_URL)
             .await
             .with_context(|| format!("fetch {INDEX_URL}"))?;
@@ -94,9 +95,13 @@ impl Backend for ZigBackend {
             .ok_or_else(|| anyhow!("no Zig asset for {version} on {triple}"))?;
 
         let bytes = common::download_and_verify(
-            ctx.http, &asset.tarball, &asset.shasum, ctx.progress,
+            ctx.http,
+            &asset.tarball,
+            &asset.shasum,
+            ctx.progress,
             &format!("zig {version}"),
-        ).await?;
+        )
+        .await?;
 
         // Zig uses .tar.xz — custom extractor needed (not handled by anyv extract_archive).
         let cache_name = format!("zig-{version}-{triple}.tar.xz");
@@ -104,7 +109,9 @@ impl Backend for ZigBackend {
         anyv_core::paths::ensure_dir(&paths.cache)?;
         std::fs::write(&cache_path, &bytes)?;
 
-        let sha_hex = hex::encode(sha2::Digest::finalize(sha2::Sha256::new_with_prefix(&bytes)));
+        let sha_hex = hex::encode(sha2::Digest::finalize(sha2::Sha256::new_with_prefix(
+            &bytes,
+        )));
         let store_dir = paths.store().join(&sha_hex[..16]);
         if store_dir.exists() {
             std::fs::remove_dir_all(&store_dir).ok();
