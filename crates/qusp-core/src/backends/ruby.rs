@@ -709,7 +709,7 @@ fn patch_macos_dylib_paths(ruby_root: &Path) -> Result<()> {
     let old_ref = otool
         .lines()
         .filter_map(|l| {
-            let s = l.trim().split_whitespace().next()?;
+            let s = l.split_whitespace().next()?;
             if s.contains("libruby") && s.contains("/runner/") {
                 Some(s.to_string())
             } else {
