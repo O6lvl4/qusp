@@ -55,9 +55,11 @@ async fn install_one(
     if !report.install_dir.as_os_str().is_empty() {
         say!("  → {}", report.install_dir.display());
     }
-    if !report.already_present {
-        materialize_farm(paths, lang, backend.as_ref(), &report);
-    }
+    // Always refresh farm links — even for already-installed versions.
+    // Stale symlinks may point through intermediate paths from a
+    // prior install and need updating (e.g. rustdoc stuck at 1.90.0
+    // while rustc was upgraded to 1.95.0).
+    materialize_farm(paths, lang, backend.as_ref(), &report);
     if let Some(root) = project_root {
         upsert_lock_entry(&root, lang, &report.version, distribution.as_deref());
     }
