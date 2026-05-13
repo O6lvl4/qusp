@@ -154,7 +154,15 @@ impl FarmManager {
             }
             let link = self.farm_dir.join(&bin.link_name);
             if let Some(existing) = read_link_target(&link) {
-                if !existing.starts_with(store_root) {
+                // Check both the raw symlink target and the fully resolved
+                // canonical path. Old-style links may point through an
+                // intermediate symlink (e.g. `rust/1.90.0/bin/rustdoc` where
+                // `rust/1.90.0` itself links into the store). Without
+                // canonicalization these look "foreign" and get skipped,
+                // leaving stale links when upgrading versions.
+                let is_qusp_owned = existing.starts_with(store_root)
+                    || link_resolves_into_store(&link, store_root);
+                if !is_qusp_owned {
                     // Foreign link (uv, brew, etc.) — preserve.
                     report.skipped_foreign.push((
                         bin.link_name.clone(),
@@ -214,7 +222,8 @@ impl FarmManager {
             let Some(target) = read_link_target(&path) else {
                 continue;
             };
-            let target_in_store = target.starts_with(store_root);
+            let target_in_store = target.starts_with(store_root)
+                    || link_resolves_into_store(&path, store_root);
             let target_exists = target.exists();
             out.push(FarmEntry {
                 link: path,
@@ -310,6 +319,26 @@ fn read_link_target(p: &Path) -> Option<PathBuf> {
         return None;
     }
     std::fs::read_link(p).ok()
+}
+
+/// Check whether a symlink ultimately resolves into the qusp store,
+/// even through intermediate symlinks (e.g. `rust/1.90.0/bin/rustdoc`
+/// where `rust/1.90.0` itself symlinks into the store). Uses
+/// `canonicalize` on both the link and the store root to handle
+/// platform quirks (macOS `/tmp` → `/private/tmp`).
+fn link_resolves_into_store(link: &Path, store_root: &Path) -> bool {
+    let Some(canon_link) = std::fs::canonicalize(link).ok() else {
+        return false;
+    };
+    if canon_link.starts_with(store_root) {
+        return true;
+    }
+    if let Some(canon_store) = std::fs::canonicalize(store_root).ok() {
+        if canon_link.starts_with(&canon_store) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -473,6 +502,79 @@ mod tests {
 
         std::fs::remove_dir_all(&store).ok();
         std::fs::remove_dir_all(&foreign_root).ok();
+        std::fs::remove_dir_all(&farm_dir).ok();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn chained_symlink_recognized_as_qusp_owned() {
+        // Simulate the Rust backend layout: farm link → lang_root/bin/tool,
+        // where lang_root itself is a symlink into the store.
+        //
+        // Before fix: install_links would see the intermediate path
+        // (lang_root/bin/tool) which doesn't start with store_root,
+        // classify it as foreign, and skip the update — leaving stale
+        // links when upgrading (e.g. rustdoc stuck at 1.90.0 while
+        // rustc moves to 1.95.0).
+        let store = tmp_dir("chain-store");
+        let real_install = store.join("abc123").join("merged");
+        anyv_core::paths::ensure_dir(&real_install.join("bin")).unwrap();
+        std::fs::write(real_install.join("bin/rustc"), "1.90\n").unwrap();
+        std::fs::write(real_install.join("bin/rustdoc"), "1.90\n").unwrap();
+
+        // lang_root/1.90.0 → store/abc123/merged (intermediate symlink)
+        let lang_root = tmp_dir("chain-lang");
+        std::os::unix::fs::symlink(&real_install, lang_root.join("1.90.0")).unwrap();
+
+        // Farm links pointing through the intermediate symlink
+        let farm_dir = tmp_dir("chain-farm");
+        std::os::unix::fs::symlink(
+            lang_root.join("1.90.0/bin/rustc"),
+            farm_dir.join("rustc"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            lang_root.join("1.90.0/bin/rustdoc"),
+            farm_dir.join("rustdoc"),
+        )
+        .unwrap();
+
+        // Now install a new version — new store entry
+        let new_install = store.join("def456").join("merged");
+        anyv_core::paths::ensure_dir(&new_install.join("bin")).unwrap();
+        std::fs::write(new_install.join("bin/rustc"), "1.95\n").unwrap();
+        std::fs::write(new_install.join("bin/rustdoc"), "1.95\n").unwrap();
+
+        let manager = FarmManager::with_dir(farm_dir.clone());
+        let report = manager
+            .install_links(
+                &new_install,
+                &[
+                    FarmBinary::unversioned("rustc"),
+                    FarmBinary::unversioned("rustdoc"),
+                ],
+                true,
+                &store,
+            )
+            .unwrap();
+
+        // Both links should be updated (not skipped as foreign)
+        assert_eq!(report.linked.len(), 2, "both links should be updated");
+        assert!(
+            report.skipped_foreign.is_empty(),
+            "chained symlinks into store should not be treated as foreign: {:?}",
+            report.skipped_foreign
+        );
+        // Verify the new links point to the new install
+        let rustdoc_target = std::fs::read_link(farm_dir.join("rustdoc")).unwrap();
+        assert!(
+            rustdoc_target.starts_with(&new_install),
+            "rustdoc should now point to new install, got {:?}",
+            rustdoc_target
+        );
+
+        std::fs::remove_dir_all(&store).ok();
+        std::fs::remove_dir_all(&lang_root).ok();
         std::fs::remove_dir_all(&farm_dir).ok();
     }
 
