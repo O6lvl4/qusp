@@ -26,14 +26,41 @@ const REPO: &str = "ruby/ruby-builder";
 
 // ─── Platform mapping ───────────────────────────────────────────────
 
-fn platform_suffix() -> Option<&'static str> {
+fn platform_suffix() -> Option<String> {
     Some(match common::os_arch() {
-        ("macos", "aarch64") => "darwin-arm64",
-        ("macos", "x86_64") => "darwin-x64",
-        ("linux", "x86_64") => "ubuntu-22.04-x64",
-        ("linux", "aarch64") => "ubuntu-22.04-arm64",
+        ("macos", "aarch64") => "darwin-arm64".to_string(),
+        ("macos", "x86_64") => "darwin-x64".to_string(),
+        ("linux", arch) => {
+            let ubuntu_ver = detect_ubuntu_version().unwrap_or("22.04".to_string());
+            let arch_label = match arch {
+                "aarch64" => "arm64",
+                _ => "x64",
+            };
+            format!("ubuntu-{ubuntu_ver}-{arch_label}")
+        }
         _ => return None,
     })
+}
+
+/// Detect the Ubuntu version from /etc/os-release and map it to the
+/// nearest ruby-builder build target (currently 22.04 or 24.04).
+fn detect_ubuntu_version() -> Option<String> {
+    let content = std::fs::read_to_string("/etc/os-release").ok()?;
+    if !content.lines().any(|l| l.starts_with("ID=ubuntu")) {
+        return None;
+    }
+    let raw = content
+        .lines()
+        .find_map(|l| l.strip_prefix("VERSION_ID="))?;
+    let ver = raw.trim_matches('"');
+    // ruby-builder publishes for 22.04 and 24.04. Map detected versions
+    // to the closest compatible target.
+    let major_minor: f64 = ver.parse().unwrap_or(22.04);
+    if major_minor >= 24.04 {
+        Some("24.04".to_string())
+    } else {
+        Some("22.04".to_string())
+    }
 }
 
 // ─── Tool registry ──────────────────────────────────────────────────
