@@ -23,7 +23,11 @@ cat > qusp.toml <<EOF
 version = "$VERSION"
 EOF
 
-out=$(capture_qusp run ruby --version)
+if ! out=$(capture_qusp run ruby --version); then
+    echo "qusp run ruby --version failed:" >&2
+    echo "$out" >&2
+    exit 1
+fi
 assert_contains "$out" "ruby ${VERSION}" "ruby --version"
 
 ok "ruby ${VERSION}: install (via ruby-build) + run"
