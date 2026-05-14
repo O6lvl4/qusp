@@ -544,9 +544,17 @@ impl Backend for RubyBackend {
             lib.join("ruby").join(&ruby_ver).display(),
             lib.join("ruby").join(&ruby_ver).join(&arch).display(),
         );
+        let mut env: std::collections::BTreeMap<String, String> =
+            [("RUBYLIB".to_string(), rubylib)].into_iter().collect();
+        // ruby-builder prebuilts on Linux dynamically link libruby.so which
+        // lives inside the install tree. Without LD_LIBRARY_PATH the loader
+        // cannot find it.
+        if cfg!(target_os = "linux") {
+            env.insert("LD_LIBRARY_PATH".to_string(), lib.display().to_string());
+        }
         Ok(RunEnv {
             path_prepend: vec![root.join("bin")],
-            env: [("RUBYLIB".to_string(), rubylib)].into_iter().collect(),
+            env,
         })
     }
 
