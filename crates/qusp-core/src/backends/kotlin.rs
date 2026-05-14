@@ -269,7 +269,7 @@ fn patch_kotlinc_spaces(kotlinc_dir: &Path) -> Result<()> {
     if content.contains(bad) {
         let fixed = content.replace(
             bad,
-            r#"cd -P "$(dirname "$source")" && cd -P "$(dirname "$linked")"#,
+            r#"cd -P "$(dirname "$source")" && cd -P "$(dirname "$linked")""#,
         );
         std::fs::write(&script, fixed)?;
     }
