@@ -333,7 +333,7 @@ fn link_resolves_into_store(link: &Path, store_root: &Path) -> bool {
     if canon_link.starts_with(store_root) {
         return true;
     }
-    if let Some(canon_store) = std::fs::canonicalize(store_root).ok() {
+    if let Ok(canon_store) = std::fs::canonicalize(store_root) {
         if canon_link.starts_with(&canon_store) {
             return true;
         }
