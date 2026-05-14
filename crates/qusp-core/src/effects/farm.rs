@@ -160,8 +160,8 @@ impl FarmManager {
                 // `rust/1.90.0` itself links into the store). Without
                 // canonicalization these look "foreign" and get skipped,
                 // leaving stale links when upgrading versions.
-                let is_qusp_owned = existing.starts_with(store_root)
-                    || link_resolves_into_store(&link, store_root);
+                let is_qusp_owned =
+                    existing.starts_with(store_root) || link_resolves_into_store(&link, store_root);
                 if !is_qusp_owned {
                     // Foreign link (uv, brew, etc.) — preserve.
                     report.skipped_foreign.push((
@@ -222,8 +222,8 @@ impl FarmManager {
             let Some(target) = read_link_target(&path) else {
                 continue;
             };
-            let target_in_store = target.starts_with(store_root)
-                    || link_resolves_into_store(&path, store_root);
+            let target_in_store =
+                target.starts_with(store_root) || link_resolves_into_store(&path, store_root);
             let target_exists = target.exists();
             out.push(FarmEntry {
                 link: path,
@@ -528,11 +528,8 @@ mod tests {
 
         // Farm links pointing through the intermediate symlink
         let farm_dir = tmp_dir("chain-farm");
-        std::os::unix::fs::symlink(
-            lang_root.join("1.90.0/bin/rustc"),
-            farm_dir.join("rustc"),
-        )
-        .unwrap();
+        std::os::unix::fs::symlink(lang_root.join("1.90.0/bin/rustc"), farm_dir.join("rustc"))
+            .unwrap();
         std::os::unix::fs::symlink(
             lang_root.join("1.90.0/bin/rustdoc"),
             farm_dir.join("rustdoc"),

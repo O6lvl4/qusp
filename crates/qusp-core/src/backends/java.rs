@@ -168,6 +168,9 @@ impl Backend for JavaBackend {
             .distribution
             .clone()
             .unwrap_or_else(|| DEFAULT_DISTRIBUTION.to_string());
+
+        // Quick check: if the exact user-specified version is already installed,
+        // skip the network round-trip entirely.
         let install_dir = java_root(&paths, version, &distribution);
         if java_home_bin(&install_dir).is_some() {
             return Ok(InstallReport {
@@ -176,9 +179,6 @@ impl Backend for JavaBackend {
                 already_present: true,
             });
         }
-
-        // W1 fix: serialize concurrent installs of the same lang+version+distribution.
-        let _install_guard = common::acquire_install_lock(&install_dir)?;
 
         let os = foojay_os().ok_or_else(|| anyhow!("Foojay has no JDK packaging for this OS"))?;
         let arch = foojay_arch()
@@ -209,6 +209,23 @@ impl Backend for JavaBackend {
             .ok_or_else(|| {
                 anyhow!("Foojay returned no JDK matching {distribution} {version} on {os}/{arch}")
             })?;
+
+        // Use the fully-resolved version for the install directory so that
+        // `build_run_env` (which receives the lock's resolved version) can
+        // find it. Example: user pins "21", Foojay resolves "21.0.11+10",
+        // directory becomes `temurin-21.0.11+10`.
+        let resolved_version = &pkg.java_version;
+        let resolved_install_dir = java_root(&paths, resolved_version, &distribution);
+        if java_home_bin(&resolved_install_dir).is_some() {
+            return Ok(InstallReport {
+                version: resolved_version.clone(),
+                install_dir: resolved_install_dir,
+                already_present: true,
+            });
+        }
+
+        // W1 fix: serialize concurrent installs of the same lang+version+distribution.
+        let _install_guard = common::acquire_install_lock(&resolved_install_dir)?;
 
         // Step 2 — fetch package details (download URL + checksum).
         let detail_url = format!("{FOOJAY_BASE}/ids/{}", pkg.id);
@@ -280,20 +297,22 @@ impl Backend for JavaBackend {
             )
         })?;
 
-        if let Some(parent) = install_dir.parent() {
+        if let Some(parent) = resolved_install_dir.parent() {
             anyv_core::paths::ensure_dir(parent)?;
         }
-        crate::effects::atomic_symlink_swap(&java_home, &install_dir).with_context(|| {
-            format!(
-                "symlink {} → {}",
-                install_dir.display(),
-                java_home.display()
-            )
-        })?;
+        crate::effects::atomic_symlink_swap(&java_home, &resolved_install_dir).with_context(
+            || {
+                format!(
+                    "symlink {} → {}",
+                    resolved_install_dir.display(),
+                    java_home.display()
+                )
+            },
+        )?;
 
         Ok(InstallReport {
-            version: pkg.java_version.clone(),
-            install_dir,
+            version: resolved_version.clone(),
+            install_dir: resolved_install_dir,
             already_present: false,
         })
     }
