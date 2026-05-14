@@ -1089,7 +1089,7 @@ dependencies = [
 
 [[package]]
 name = "qusp-cli"
-version = "0.31.1"
+version = "0.31.2"
 dependencies = [
  "anyhow",
  "anyv-core 0.1.0 (git+https://github.com/O6lvl4/anyv-core?tag=v0.2.0)",
@@ -1106,7 +1106,7 @@ dependencies = [
 
 [[package]]
 name = "qusp-core"
-version = "0.31.1"
+version = "0.31.2"
 dependencies = [
  "anyhow",
  "anyv-core 0.1.0 (git+https://github.com/O6lvl4/anyv-core?tag=v0.2.0)",
