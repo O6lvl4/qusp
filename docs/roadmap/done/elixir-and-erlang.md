@@ -33,15 +33,18 @@ build**（`./configure && make`、5–15 分）と想定していた。実装着
   `otp-<triple>.tar.gz`。検証は `<asset>.sigstore` の DSSE provenance に
   attest された sha256。Sigstore 署名チェーン（Fulcio/Rekor）のフル検証は
   v1.0 ロードマップ送り。
-- Source (Linux glibc, **experimental**): `erlef/otp_builds` は Linux 成果物を
-  出さないので、EEF の `builds.hex.pm`（`setup-beam` と同じ供給元）を使う。
+- Source (Linux glibc): `erlef/otp_builds` は Linux 成果物を出さないので、
+  EEF の `builds.hex.pm`（`setup-beam` と同じ供給元）を使う。
   arch ∈ {amd64, arm64} × flavor `ubuntu-{20,22,24}.04`、検証は
   `builds.txt` の4列目 sha256。tarball は source-style（`Install`
-  スクリプト同梱）なので relocate_otp の Install 分岐がそのまま効く。
+  スクリプト同梱）なので relocate_otp の Install 分岐で配置。
   flavor は `/etc/os-release` から推定、`QUSP_OTP_UBUNTU` で上書き可。
-  **mac 開発機ではランタイム検証不能** → 構造検証（checksum 一致・
-  `Install -minimal` インタフェース一致・展開レイアウト）まで確認し、
-  実行時検証は Linux CI に委ねる(`QUSP_E2E_LINUX=1` で e2e 有効化)。
+  在庫は flavor ごとに違うので候補連鎖でフォールバック
+  (`linux_flavor_candidates`、OpenSSL メジャー境界を尊重)。
+  **Ubuntu CI で install→run→farm まで実行時検証済み**(`QUSP_E2E_LINUX=1`)。
+  mac 開発機では Linux バイナリを実行できないため CI 検証に依存。
+  実環境で初めて出た3バグ(builds.txt 先頭空行でのパーサ中断、
+  Install へ未存在パスを渡していた件、flavor 在庫差)を修正して green 化。
 - musl(Alpine 等)/ Windows / 非対応 arch は明示メッセージで bail。
 - relocation: prebuilt は relocatable 設計（`bin/erl` が `find_rootdir`
   で動的解決）。ただし farm symlink（`~/.local/bin/erl`、OTP root の外）

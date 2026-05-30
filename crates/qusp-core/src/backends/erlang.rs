@@ -12,13 +12,15 @@
 //! - **macOS** (fully supported): `erlef/otp_builds` GitHub releases
 //!   (Apple Silicon + Intel), verified via the Sigstore provenance
 //!   digest. This is the daily-dogfood path.
-//! - **Linux glibc** (experimental): `erlef/otp_builds` ships no Linux
-//!   artifacts, so we fall back to the Erlang Ecosystem Foundation's
-//!   `builds.hex.pm` service (the same source `setup-beam` uses),
-//!   verified via the sha256 column of its `builds.txt` manifest. These
-//!   are Ubuntu-built, glibc-linked tarballs — Alpine/musl is rejected.
-//!   The runtime is **not yet validated in qusp's macOS-only dev loop**;
-//!   it rides on Linux CI.
+//! - **Linux glibc**: `erlef/otp_builds` ships no Linux artifacts, so we
+//!   fall back to the Erlang Ecosystem Foundation's `builds.hex.pm`
+//!   service (the same source `setup-beam` uses), verified via the
+//!   sha256 column of its `builds.txt` manifest. These are Ubuntu-built,
+//!   glibc-linked tarballs (Alpine/musl is rejected), relocated via the
+//!   bundled `Install` script. Per-flavor coverage gaps are handled by
+//!   falling back across Ubuntu flavors (see `linux_flavor_candidates`).
+//!   The install→run→farm path is exercised by the Ubuntu e2e in CI (the
+//!   macOS dev loop can't run Linux binaries).
 //! - **Windows / musl / other**: bail with a clear message.
 //!
 //! ## Release / asset layout

@@ -222,9 +222,10 @@ and design decisions.
 - `qusp doctor`: health check with PATH, pins, and integration diagnostics
 - Content-addressed store with strict hash verification on every install
 - BEAM stack: Erlang (macOS: erlef/otp_builds + Sigstore digest; Linux glibc:
-  builds.hex.pm + sha256, **experimental**) + Elixir (precompiled, arch-neutral,
-  `requires = ["erlang"]`, installed dependency-first). Alpine/musl rejected;
-  override the Ubuntu flavor with `QUSP_OTP_UBUNTU`
+  builds.hex.pm + sha256, CI-validated on Ubuntu) + Elixir (precompiled,
+  arch-neutral, `requires = ["erlang"]`, installed dependency-first). Linux
+  falls back across Ubuntu flavors for coverage; Alpine/musl rejected;
+  override with `QUSP_OTP_UBUNTU`
 - Tested on macOS x86_64 (daily dogfood), CI on macOS arm64 + Linux + Windows
 
 ## Roadmap
