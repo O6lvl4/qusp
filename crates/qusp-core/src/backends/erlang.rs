@@ -683,7 +683,10 @@ fn hexpm_sha256_for(manifest: &str, v_strip: &str) -> Option<String> {
     let tag = format!("OTP-{v_strip}");
     for line in manifest.lines() {
         let mut it = line.split_whitespace();
-        if it.next()? != tag {
+        // Skip blank lines — the real manifest opens with one, and using
+        // `?` here would abort the whole scan on it.
+        let Some(first) = it.next() else { continue };
+        if first != tag {
             continue;
         }
         // remaining cols: git-ref (0), date (1), sha256 (2)
@@ -824,11 +827,16 @@ mod tests {
 
     #[test]
     fn hexpm_sha256_matches_exact_tag_with_checksum() {
-        // 4-col lines (with sha) and a 3-col legacy line (no sha).
-        let manifest = "\
+        // Mirrors the real manifest: a LEADING BLANK LINE (which must not
+        // abort the scan), 4-col lines (with sha), a 3-col legacy line (no
+        // sha), and trailing non-OTP branch rows (master/maint).
+        // NB: starts with a literal newline → a leading blank line.
+        let manifest = "
+OTP-24.2 df48c260e74c3e9058ff8681ce9f554e6fa0fe34 2022-06-09T23:56:36Z
+OTP-27.0 601a012837ea0a5c8095bf24223132824177124d 2024-05-20T09:50:35Z
 OTP-27.3 05737d130706c7189a8e6750d9c2252d2cc7987e 2025-03-05T10:37:16Z e2ea265a971505cbf7d85620ab7c53b67bfac213039f4b0d75ee45bb6052dafe
 OTP-27.3.1 abc 2025-04-01T00:00:00Z 1111111111111111111111111111111111111111111111111111111111111111
-OTP-27.0 601a012837ea0a5c8095bf24223132824177124d 2024-05-20T09:50:35Z
+master bf6adb8744a589c89eb79c8ae9c49ca348f325fd 2026-05-22T12:40:33Z 9c10a88bcdade660def54ae5b366afbf3f3c1da4f3a005f84760f188090e9637
 ";
         assert_eq!(
             hexpm_sha256_for(manifest, "27.3").as_deref(),
