@@ -99,24 +99,30 @@ fn linux_arch() -> Option<&'static str> {
     })
 }
 
-/// builds.hex.pm OS flavor (`ubuntu-XX.YY`). Honors `QUSP_OTP_UBUNTU`
-/// (e.g. `22.04` or `ubuntu-22.04`), else matches the host Ubuntu
-/// version when builds.hex.pm publishes it, else a broad default.
-fn linux_flavor() -> String {
-    const PUBLISHED: [&str; 3] = ["20.04", "22.04", "24.04"];
-    const DEFAULT: &str = "ubuntu-22.04";
+/// Ordered builds.hex.pm flavors to try for this host, most-preferred
+/// first. builds.hex.pm coverage varies per flavor (e.g. ubuntu-24.04
+/// carries no OTP-27.3), so we fall back to an older flavor when the
+/// pinned version isn't built for the host's own — an older-Ubuntu build
+/// runs on a newer host **within the same OpenSSL major** (22.04 and
+/// 24.04 are both OpenSSL 3; 20.04 is OpenSSL 1.1 and kept on its own
+/// island so a crypto NIF never chases a missing libcrypto). An explicit
+/// `QUSP_OTP_UBUNTU` pins a single flavor (no fallback).
+fn linux_flavor_candidates() -> Vec<String> {
     if let Ok(v) = std::env::var("QUSP_OTP_UBUNTU") {
         let v = v.trim().trim_start_matches("ubuntu-");
         if !v.is_empty() {
-            return format!("ubuntu-{v}");
+            return vec![format!("ubuntu-{v}")];
         }
     }
-    if let Some(ver) = os_release_ubuntu_version() {
-        if PUBLISHED.contains(&ver.as_str()) {
-            return format!("ubuntu-{ver}");
-        }
-    }
-    DEFAULT.to_string()
+    let chain: &[&str] = match os_release_ubuntu_version().as_deref() {
+        Some("20.04") => &["ubuntu-20.04"], // OpenSSL 1.1 island
+        Some("22.04") => &["ubuntu-22.04"],
+        Some("24.04") => &["ubuntu-24.04", "ubuntu-22.04"],
+        // Newer-than-known Ubuntu, or a non-Ubuntu glibc distro: prefer
+        // the broadly-built, oldest-glibc OpenSSL-3 baseline, then 24.04.
+        _ => &["ubuntu-22.04", "ubuntu-24.04"],
+    };
+    chain.iter().map(|s| s.to_string()).collect()
 }
 
 /// The host's `VERSION_ID` if `/etc/os-release` says `ID=ubuntu`.
@@ -337,16 +343,20 @@ impl Backend for ErlangBackend {
             let arch = linux_arch().ok_or_else(|| {
                 anyhow!("erlang Linux prebuilds (builds.hex.pm) cover x86_64 and aarch64 only")
             })?;
-            let flavor = linux_flavor();
-            let url = format!("https://builds.hex.pm/builds/otp/{arch}/{flavor}/builds.txt");
-            let body = http.get_text(&url).await?;
-            let mut out: Vec<String> = body
-                .lines()
-                .filter_map(|l| l.split_whitespace().next())
-                .filter_map(|tag| tag.strip_prefix("OTP-"))
-                .filter(|v| !v.contains("-rc") && !v.contains("-pre"))
-                .map(|v| v.to_string())
-                .collect();
+            // Union across the candidate flavors, since install falls
+            // back across them — everything listed is actually installable.
+            let mut out: Vec<String> = Vec::new();
+            for flavor in linux_flavor_candidates() {
+                let url = format!("https://builds.hex.pm/builds/otp/{arch}/{flavor}/builds.txt");
+                let body = http.get_text(&url).await?;
+                out.extend(
+                    body.lines()
+                        .filter_map(|l| l.split_whitespace().next())
+                        .filter_map(|tag| tag.strip_prefix("OTP-"))
+                        .filter(|v| !v.contains("-rc") && !v.contains("-pre"))
+                        .map(|v| v.to_string()),
+                );
+            }
             out.sort_by(|a, b| version_cmp(b, a));
             out.dedup();
             return Ok(out);
@@ -635,24 +645,31 @@ async fn resolve_otp_download(
             let arch = linux_arch().ok_or_else(|| {
                 anyhow!("erlang Linux prebuilds (builds.hex.pm) cover x86_64 and aarch64 only")
             })?;
-            let flavor = linux_flavor();
-            let base = format!("https://builds.hex.pm/builds/otp/{arch}/{flavor}");
-            let manifest = http
-                .get_text(&format!("{base}/builds.txt"))
-                .await
-                .with_context(|| format!("fetch builds.hex.pm OTP manifest ({arch}/{flavor})"))?;
-            let sha256 = hexpm_sha256_for(&manifest, v_strip).ok_or_else(|| {
-                anyhow!(
-                    "OTP-{v_strip} not found with a checksum in builds.hex.pm {arch}/{flavor}. \
-                     Run `qusp list-remote erlang` for available versions, or override the \
-                     Ubuntu flavor with QUSP_OTP_UBUNTU (e.g. 20.04|22.04|24.04)."
-                )
-            })?;
-            Ok(OtpDownload {
-                asset: format!("OTP-{v_strip}.tar.gz"),
-                url: format!("{base}/OTP-{v_strip}.tar.gz"),
-                sha256,
-            })
+            // Try each candidate flavor until one publishes this version
+            // with a checksum (coverage varies per flavor).
+            let flavors = linux_flavor_candidates();
+            for flavor in &flavors {
+                let base = format!("https://builds.hex.pm/builds/otp/{arch}/{flavor}");
+                let manifest = http
+                    .get_text(&format!("{base}/builds.txt"))
+                    .await
+                    .with_context(|| {
+                        format!("fetch builds.hex.pm OTP manifest ({arch}/{flavor})")
+                    })?;
+                if let Some(sha256) = hexpm_sha256_for(&manifest, v_strip) {
+                    return Ok(OtpDownload {
+                        asset: format!("OTP-{v_strip}.tar.gz"),
+                        url: format!("{base}/OTP-{v_strip}.tar.gz"),
+                        sha256,
+                    });
+                }
+            }
+            bail!(
+                "OTP-{v_strip} not found with a checksum in builds.hex.pm {arch} \
+                 (tried {}). Run `qusp list-remote erlang` for available versions, \
+                 or override the Ubuntu flavor with QUSP_OTP_UBUNTU (e.g. 22.04|24.04).",
+                flavors.join(", ")
+            );
         }
         other => bail!("erlang via qusp supports macOS and Linux (glibc) only, not {other}"),
     }
@@ -795,12 +812,13 @@ mod tests {
     }
 
     #[test]
-    fn linux_flavor_honors_env_override() {
-        // Bare version and `ubuntu-`-prefixed both normalize the same way.
+    fn linux_flavor_override_pins_single_flavor() {
+        // Bare version and `ubuntu-`-prefixed both normalize the same way,
+        // and an explicit override disables the fallback chain.
         std::env::set_var("QUSP_OTP_UBUNTU", "20.04");
-        assert_eq!(linux_flavor(), "ubuntu-20.04");
+        assert_eq!(linux_flavor_candidates(), vec!["ubuntu-20.04"]);
         std::env::set_var("QUSP_OTP_UBUNTU", "ubuntu-24.04");
-        assert_eq!(linux_flavor(), "ubuntu-24.04");
+        assert_eq!(linux_flavor_candidates(), vec!["ubuntu-24.04"]);
         std::env::remove_var("QUSP_OTP_UBUNTU");
     }
 
