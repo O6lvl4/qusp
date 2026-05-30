@@ -42,7 +42,6 @@
 | [PHP](on-hold/php.md) | source build、extension 地獄 |
 | [R](on-hold/r.md) | OS deps 重い、source build |
 | [Swift (server-side)](on-hold/swift.md) | Linux distro 別 tarball、PGP sig (新検証経路) |
-| [Elixir + Erlang](on-hold/elixir-and-erlang.md) | Erlang OTP source build、Elixir prebuilt zip。`requires = ["erlang"]` |
 
 ### Bootstrap-installer wrap 系
 
@@ -145,6 +144,7 @@
 | [Clojure backend](done/clojure.md) | v0.21.0 | Phase 4 |
 | [Lua backend (source-build pattern 初投入)](done/lua.md) | v0.22.0 | Phase 4 |
 | [Haskell backend (ghcup wrap pattern 初投入)](done/haskell.md) | v0.23.0 | Phase 4 |
+| [Elixir + Erlang backends (BEAM stack, install-time requires)](done/elixir-and-erlang.md) | unreleased | Phase 4 |
 | [`qusp x <script>` extension-routing (Phase 5 第一弾)](done/x-script-routing.md) | v0.24.0 | Phase 5 |
 | [e2e test scenarios](done/e2e-tests.md) | scripts/e2e/* | Phase 1 |
 | [Benchmark vs mise](done/benchmark-vs-mise.md) — shim mode 4× 速い実数 | scripts/bench.sh | Phase 1 |

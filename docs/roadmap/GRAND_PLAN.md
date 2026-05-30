@@ -63,13 +63,13 @@ curated tool registry を広げる。**Phase 5 (Hospitality) の cross-language 
 - [x] **[Dart](done/dart.md)** (v0.19.0) ─ Google Cloud Storage、BSD-style sha256sum
 - [x] **[Scala 3](done/scala.md)** (v0.20.0) ─ direct GitHub release、Coursier wrap 不要に
 - [x] **[Clojure](done/clojure.md)** (v0.21.0) ─ posix-install.sh を Rust で再実装、Application Support 空間 trap 2 度目
-- [x] **[Lua](done/lua.md)** (v0.22.0) ─ source-build pattern 初投入 (PHP/R/Erlang/OCaml の雛形)、Application Support 3 度目
+- [x] **[Lua](done/lua.md)** (v0.22.0) ─ source-build pattern 初投入 (PHP/R/OCaml の雛形。Erlang は当初候補だったが prebuilt に転換)、Application Support 3 度目
 - [x] **[Haskell](done/haskell.md)** (v0.23.0) ─ ghcup wrap pattern 初投入、Application Support 4 度目 (autoconf 系) → no-space store
+- [x] **[Elixir + Erlang](done/elixir-and-erlang.md)** (unreleased) ─ 複合、初の install-time `requires=["erlang"]`。当初の OTP source build 計画から **erlef/otp_builds prebuilt + sigstore digest 検証 + find_rootdir relocation** へ全面転換 (上流実測で source build 不要と判明)
 
 ### 残り (Phase 4 完了まで)
 
 - [ ] **[OCaml](on-hold/ocaml.md)** ─ opam-wrap pattern (Haskell の no-space store を流用予定)
-- [ ] **[Elixir + Erlang](on-hold/elixir-and-erlang.md)** ─ 複合、`requires=["erlang"]`、OTP source build
 - [ ] **[PHP](on-hold/php.md)** ─ source build、extension 地獄
 - [ ] **[R](on-hold/r.md)** ─ OS deps 重い、source build
 - [ ] **[Swift (server-side)](on-hold/swift.md)** ─ swift.org tarball、PGP sig (新検証経路)

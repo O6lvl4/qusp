@@ -59,67 +59,105 @@ impl<'a> Orchestrator<'a> {
         self.execute_install_plans(&plans).await
     }
 
-    /// **Effect:** run the given install plans in parallel across
-    /// backends. Threads each plan's distribution into the backend's
+    /// **Effect:** run the given install plans, ordered into dependency
+    /// layers by each backend's `requires()` so install-time cross-backend
+    /// deps are satisfied (e.g. Erlang installs before Elixir, which reads
+    /// the installed OTP major at install time). Backends within a layer
+    /// have no inter-dependencies and install in parallel; layers run in
+    /// sequence. Threads each plan's distribution into the backend's
     /// `InstallOpts`. Per-backend failures are **collected, not
-    /// propagated** — one broken backend doesn't kill the rest. The
-    /// caller decides whether the partial set is OK.
+    /// propagated** — one broken backend doesn't kill the rest; a backend
+    /// whose required dependency failed is skipped (and recorded failed).
+    /// The caller decides whether the partial set is OK.
     pub async fn execute_install_plans(
         &self,
         plans: &[InstallPlan],
     ) -> Result<InstallToolchainsResult> {
-        let mut futs = Vec::new();
-        for plan in plans {
-            let Some(backend) = self.registry.get(plan.language.as_str()) else {
-                continue;
-            };
-            let paths = self.paths.clone();
-            let lang = plan.language.as_str().to_string();
-            let version = plan.version.as_str().to_string();
-            let opts = InstallOpts {
-                distribution: plan.distribution.as_ref().map(|d| d.as_str().to_string()),
-            };
-            futs.push(async move {
-                let http = LiveHttp::new(concat!("qusp/", env!("CARGO_PKG_VERSION")))
-                    .expect("LiveHttp build cannot fail with default reqwest config");
-                let progress = crate::effects::LiveProgress::new();
-                let ctx = crate::backend::InstallCtx {
-                    opts: &opts,
-                    http: &http,
-                    progress: &progress,
-                };
-                let result = backend.install(&paths, &version, &ctx).await;
-                (lang, version, result)
-            });
-        }
-        let outcomes = futures::future::join_all(futs).await;
+        let layers = layer_install_plans(plans, self.registry);
+
+        // The set of langs being installed in *this* call — only deps
+        // within it gate ordering; deps outside it are presumed already
+        // installed (or were rejected by manifest validation).
+        let in_set: std::collections::BTreeSet<&str> =
+            plans.iter().map(|p| p.language.as_str()).collect();
+
         let mut installed = Vec::new();
-        let mut failed = Vec::new();
+        let mut failed: Vec<(String, String)> = Vec::new();
+        let mut failed_langs: std::collections::BTreeSet<String> = Default::default();
         // Load global pins once for the post-install farm pass.
         let global_pins = crate::effects::GlobalPins::load(&self.paths.config).unwrap_or_default();
         let farm = crate::effects::FarmManager::default();
         let store_root = self.paths.store();
-        for (lang, version, result) in outcomes {
-            match result {
-                Ok(report) => {
-                    if !report.already_present {
-                        Self::materialize_farm(
-                            self.registry,
-                            &lang,
-                            &version,
-                            &report,
-                            &global_pins,
-                            &farm,
-                            &store_root,
-                        );
-                    }
-                    installed.push(InstallSummary {
+
+        for layer in layers {
+            let mut futs = Vec::new();
+            for plan in layer {
+                let Some(backend) = self.registry.get(plan.language.as_str()) else {
+                    continue;
+                };
+                let lang = plan.language.as_str().to_string();
+                // Skip if an in-set requirement failed in an earlier layer.
+                let unmet: Vec<&str> = backend
+                    .requires()
+                    .iter()
+                    .copied()
+                    .filter(|r| in_set.contains(r) && failed_langs.contains(*r))
+                    .collect();
+                if !unmet.is_empty() {
+                    failed_langs.insert(lang.clone());
+                    failed.push((
                         lang,
-                        version: report.version,
-                        already_present: report.already_present,
-                    });
+                        format!(
+                            "skipped: required toolchain(s) failed to install: {}",
+                            unmet.join(", ")
+                        ),
+                    ));
+                    continue;
                 }
-                Err(e) => failed.push((lang, format!("{e:#}"))),
+                let paths = self.paths.clone();
+                let version = plan.version.as_str().to_string();
+                let opts = InstallOpts {
+                    distribution: plan.distribution.as_ref().map(|d| d.as_str().to_string()),
+                };
+                futs.push(async move {
+                    let http = LiveHttp::new(concat!("qusp/", env!("CARGO_PKG_VERSION")))
+                        .expect("LiveHttp build cannot fail with default reqwest config");
+                    let progress = crate::effects::LiveProgress::new();
+                    let ctx = crate::backend::InstallCtx {
+                        opts: &opts,
+                        http: &http,
+                        progress: &progress,
+                    };
+                    let result = backend.install(&paths, &version, &ctx).await;
+                    (lang, version, result)
+                });
+            }
+            let outcomes = futures::future::join_all(futs).await;
+            for (lang, version, result) in outcomes {
+                match result {
+                    Ok(report) => {
+                        if !report.already_present {
+                            Self::materialize_farm(
+                                self.registry,
+                                &lang,
+                                &version,
+                                &report,
+                                &global_pins,
+                                &farm,
+                                &store_root,
+                            );
+                        }
+                        installed.push(InstallSummary {
+                            lang,
+                            version: report.version,
+                            already_present: report.already_present,
+                        });
+                    }
+                    Err(e) => {
+                        failed_langs.insert(lang.clone());
+                        failed.push((lang, format!("{e:#}")));
+                    }
+                }
             }
         }
         Ok(InstallToolchainsResult { installed, failed })
@@ -422,5 +460,116 @@ impl<'a> Orchestrator<'a> {
         merged.path_prepend.extend(env.path_prepend);
         merged.env.extend(env.env);
         Ok(())
+    }
+}
+
+/// Order install plans into dependency layers using each backend's
+/// `requires()`. A plan lands in the earliest layer where all of its
+/// in-set requirements already sit in an earlier layer; requirements not
+/// present in `plans` are treated as already-satisfied. Within a layer
+/// there are no inter-dependencies, so a layer installs in parallel.
+///
+/// Returns owned clones (small structs) so the executor can move them
+/// into per-backend futures. If a dependency cycle makes progress
+/// impossible, the remaining plans are emitted as one final layer rather
+/// than looping forever (install order among them is then arbitrary).
+fn layer_install_plans(plans: &[InstallPlan], registry: &BackendRegistry) -> Vec<Vec<InstallPlan>> {
+    use std::collections::BTreeSet;
+    let in_set: BTreeSet<&str> = plans.iter().map(|p| p.language.as_str()).collect();
+    let mut placed: BTreeSet<String> = BTreeSet::new();
+    let mut remaining: Vec<&InstallPlan> = plans.iter().collect();
+    let mut layers: Vec<Vec<InstallPlan>> = Vec::new();
+
+    while !remaining.is_empty() {
+        let (ready, blocked): (Vec<&InstallPlan>, Vec<&InstallPlan>) =
+            remaining.iter().partition(|p| {
+                registry
+                    .get(p.language.as_str())
+                    .map(|b| {
+                        b.requires()
+                            .iter()
+                            .filter(|r| in_set.contains(*r))
+                            .all(|r| placed.contains(*r))
+                    })
+                    .unwrap_or(true)
+            });
+
+        if ready.is_empty() {
+            // Unsatisfiable (cycle) — emit the rest in one layer.
+            layers.push(blocked.iter().map(|p| (*p).clone()).collect());
+            break;
+        }
+        for p in &ready {
+            placed.insert(p.language.as_str().to_string());
+        }
+        layers.push(ready.iter().map(|p| (*p).clone()).collect());
+        remaining = blocked;
+    }
+    layers
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::backends;
+    use crate::domain::pinned::validate;
+    use crate::manifest::{LanguageSection, Manifest as RawManifest};
+
+    fn registry() -> BackendRegistry {
+        let mut r = BackendRegistry::new();
+        r.register(Arc::new(backends::erlang::ErlangBackend));
+        r.register(Arc::new(backends::elixir::ElixirBackend));
+        r.register(Arc::new(backends::go::GoBackend));
+        r
+    }
+
+    fn pinned(entries: &[(&str, &str)]) -> PinnedManifest {
+        let mut languages: BTreeMap<String, LanguageSection> = BTreeMap::new();
+        for (lang, version) in entries {
+            languages.insert(
+                (*lang).to_string(),
+                LanguageSection {
+                    version: Some((*version).to_string()),
+                    distribution: None,
+                    tools: BTreeMap::new(),
+                },
+            );
+        }
+        validate(&RawManifest { languages }, &registry()).unwrap()
+    }
+
+    /// Elixir (`requires = ["erlang"]`) must land in a strictly later
+    /// layer than Erlang so its install-time OTP-major probe succeeds.
+    #[test]
+    fn elixir_layers_after_erlang() {
+        let manifest = pinned(&[("elixir", "1.18.4"), ("erlang", "28.0"), ("go", "1.26.2")]);
+        let plans = plan_install_toolchains(&manifest);
+        let layers = layer_install_plans(&plans, &registry());
+
+        let layer_of = |lang: &str| {
+            layers
+                .iter()
+                .position(|l| l.iter().any(|p| p.language.as_str() == lang))
+                .unwrap()
+        };
+        assert!(
+            layer_of("erlang") < layer_of("elixir"),
+            "erlang must install before elixir"
+        );
+        // go has no deps → first layer, alongside erlang.
+        assert_eq!(layer_of("go"), layer_of("erlang"));
+    }
+
+    /// Without a dependent, every plan is independent → a single layer.
+    #[test]
+    fn independent_plans_share_one_layer() {
+        let manifest = pinned(&[("erlang", "28.0"), ("go", "1.26.2")]);
+        let plans = plan_install_toolchains(&manifest);
+        let layers = layer_install_plans(&plans, &registry());
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].len(), 2);
     }
 }

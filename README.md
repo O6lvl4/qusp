@@ -109,7 +109,7 @@ $ which python
 
 ## Languages
 
-21 backends, all native Rust:
+23 backends, all native Rust:
 
 | Backend | Source | Verification | Tools |
 |---|---|---|---|
@@ -131,6 +131,8 @@ $ which python
 | **dart** | dart.dev releases | sha256 | — |
 | **elm** | elm/compiler GitHub releases | content-addressed | — |
 | **gleam** | gleam-lang/gleam releases | sha256 + sigstore | — |
+| **erlang** | erlef/otp_builds prebuilts (macOS-only) | sigstore digest | — (rebar3/mix) |
+| **elixir** | elixir-lang/elixir precompiled | sha256 | mix, iex (requires `[erlang]`) |
 | **lua** | lua.org source (compiled locally) | sha256 | — |
 | **php** | php-build-standalone | sha256 | — |
 | **haskell** | GHCup releases | sha256 | — |
@@ -152,7 +154,7 @@ Resolution goes through Foojay disco, the same registry SDKMAN uses.
 
 | | mise / asdf | proto | uv (Python) | sdkman | devbox / Nix | **qusp** |
 |---|---|---|---|---|---|---|
-| Languages | 100+ via plugins | ~15 | 1 | JVM only | unlimited via Nix | 21 native |
+| Languages | 100+ via plugins | ~15 | 1 | JVM only | unlimited via Nix | 23 native |
 | Plugin model | bash plugins | Rust | n/a | bash | derivations | none — native Rust |
 | Hash verification | varies | varies | strict | sha256 | derivation | **strict, every install** |
 | Subprocess freeloading | yes | partial | none | yes | none | **none** |
@@ -205,20 +207,23 @@ and design decisions.
 
 - A package manager. It manages toolchains, not Maven/npm/PyPI artifacts.
 - A reproducible-OS environment manager. Use Nix or devbox for that.
-- A plugin platform. The strength is curated quality across 21 languages.
+- A plugin platform. The strength is curated quality across 23 languages.
 - A drop-in replacement for `cargo install` / `npm install -g` / `gem install`
   / `pip install`. Tools that have peer-dep complexity are intentionally
   not in qusp's curated registries.
 
 ## Status
 
-**v0.29.1** — 21 languages, symlink farm, global pins, VSCode/GUI integration.
+**v0.29.1** — 23 languages, symlink farm, global pins, VSCode/GUI integration.
 
 - Symlink farm: `qusp install` + `qusp pin set` exposes bare commands in `~/.local/bin/`
 - Global pins: per-language version control for unversioned bare commands
 - `qusp setup`: one-time `/etc/paths.d/qusp` for GUI app visibility
 - `qusp doctor`: health check with PATH, pins, and integration diagnostics
 - Content-addressed store with strict hash verification on every install
+- BEAM stack: Erlang (erlef/otp_builds prebuilts, Sigstore-attested digest) +
+  Elixir (precompiled, `requires = ["erlang"]`, installed dependency-first) —
+  macOS-only for now; Linux awaits upstream prebuilts
 - Tested on macOS x86_64 (daily dogfood), CI on macOS arm64 + Linux + Windows
 
 ## Roadmap

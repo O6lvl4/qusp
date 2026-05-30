@@ -214,7 +214,9 @@ fn build_registry() -> BackendRegistry {
     r.register(Arc::new(backends::node::NodeBackend));
     r.register(Arc::new(backends::php::PhpBackend));
     r.register(Arc::new(backends::deno::DenoBackend));
+    r.register(Arc::new(backends::elixir::ElixirBackend));
     r.register(Arc::new(backends::elm::ElmBackend));
+    r.register(Arc::new(backends::erlang::ErlangBackend));
     r.register(Arc::new(backends::gleam::GleamBackend));
     r.register(Arc::new(backends::java::JavaBackend));
     r.register(Arc::new(backends::rust::RustBackend));
