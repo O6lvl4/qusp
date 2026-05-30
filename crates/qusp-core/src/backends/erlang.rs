@@ -477,7 +477,16 @@ fn relocate_otp(otp_root: &Path, resident_root: &Path) -> Result<()> {
                 std::fs::set_permissions(&install, perms).ok();
             }
         }
-        let abs = resident_root.to_string_lossy();
+        // Install validates that <ERL_ROOT> exists and is absolute, then
+        // bakes it into the generated bin/ scripts as ROOTDIR. Pass the
+        // real extracted dir (otp_root) — `resident_root` is the
+        // `data/erlang/<ver>` symlink we only create *after* relocation,
+        // so it doesn't exist yet. otp_root (the store dir) is stable and
+        // is what the post-swap symlink resolves to anyway.
+        let abs_root = otp_root
+            .canonicalize()
+            .with_context(|| format!("canonicalize {}", otp_root.display()))?;
+        let abs = abs_root.to_string_lossy();
         let out = Command::new(&install)
             .current_dir(otp_root)
             .args(["-minimal", &abs])
