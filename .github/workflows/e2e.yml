@@ -57,6 +57,12 @@ jobs:
           # to 5000/hr (authenticated). qusp's HTTP client picks this up
           # via crate::http::client.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Opt the Linux runner into the experimental Erlang/Elixir path
+          # (builds.hex.pm). This is the runtime validation the macOS dev
+          # loop can't provide. The e2e workflow is scheduled/manual only,
+          # so it never gates a push. (macOS ignores it — erlang.sh runs
+          # the erlef/otp_builds path there regardless.)
+          QUSP_E2E_LINUX: "1"
         run: |
           set -euo pipefail
           if [ -n "${{ inputs.tests }}" ]; then
