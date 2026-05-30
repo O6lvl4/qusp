@@ -80,67 +80,134 @@ impl LiveHttp {
     }
 }
 
+/// Max total attempts (1 initial + retries) before giving up on a
+/// transient failure.
+const MAX_HTTP_ATTEMPTS: u32 = 4;
+/// Base backoff; doubles each retry (250ms → 500ms → 1s).
+const HTTP_BACKOFF_BASE_MS: u64 = 250;
+
+/// Whether a request outcome is worth retrying. `status` is the HTTP
+/// status if a response arrived; `transport` is true for
+/// connect/timeout/body/decode-level errors (no status). We retry
+/// transport blips and 5xx / 429 — never other 4xx, which are real
+/// answers (a 404/401 won't get better by asking again).
+fn is_retryable(status: Option<reqwest::StatusCode>, transport: bool) -> bool {
+    match status {
+        Some(s) => s.is_server_error() || s == reqwest::StatusCode::TOO_MANY_REQUESTS,
+        None => transport,
+    }
+}
+
+fn http_backoff(attempt: u32) -> std::time::Duration {
+    let shift = attempt.saturating_sub(1).min(4);
+    std::time::Duration::from_millis(HTTP_BACKOFF_BASE_MS * (1u64 << shift))
+}
+
+/// reqwest errors that represent a flaky link rather than a definitive
+/// answer: connection refused/reset, timeouts, and partial/truncated
+/// bodies (the "end of file before message length reached" class).
+fn reqwest_is_transient(e: &reqwest::Error) -> bool {
+    e.is_timeout() || e.is_connect() || e.is_request() || e.is_body() || e.is_decode()
+}
+
+impl LiveHttp {
+    /// Run a GET — built by `make_req`, body read by `read` — retrying
+    /// transient failures with backoff. Both the request *and* the body
+    /// read are inside the retried block, so a connection dropped
+    /// mid-body (the flaky-CI failure mode) gets another shot instead of
+    /// surfacing raw.
+    async fn run_with_retry<T, MakeReq, Read, ReadFut>(
+        &self,
+        url: &str,
+        make_req: MakeReq,
+        read: Read,
+    ) -> Result<T>
+    where
+        MakeReq: Fn() -> reqwest::RequestBuilder,
+        Read: Fn(reqwest::Response) -> ReadFut,
+        ReadFut: std::future::Future<Output = reqwest::Result<T>>,
+    {
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            let outcome: reqwest::Result<T> = async {
+                let resp = make_req().send().await?.error_for_status()?;
+                read(resp).await
+            }
+            .await;
+            match outcome {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    let retry = attempt < MAX_HTTP_ATTEMPTS
+                        && is_retryable(e.status(), reqwest_is_transient(&e));
+                    if !retry {
+                        return Err(e)
+                            .with_context(|| format!("GET {url} (after {attempt} attempt(s))"));
+                    }
+                    tokio::time::sleep(http_backoff(attempt)).await;
+                }
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl HttpFetcher for LiveHttp {
     async fn get_text(&self, url: &str) -> Result<String> {
-        Ok(self
-            .client
-            .get(url)
-            .send()
+        self.run_with_retry(url, || self.client.get(url), |r| r.text())
             .await
-            .with_context(|| format!("GET {url}"))?
-            .error_for_status()
-            .with_context(|| format!("response error for {url}"))?
-            .text()
-            .await?)
     }
 
     async fn get_bytes(&self, url: &str) -> Result<Bytes> {
-        Ok(self
-            .client
-            .get(url)
-            .send()
+        self.run_with_retry(url, || self.client.get(url), |r| r.bytes())
             .await
-            .with_context(|| format!("GET {url}"))?
-            .error_for_status()
-            .with_context(|| format!("response error for {url}"))?
-            .bytes()
-            .await?)
     }
 
     async fn get_bytes_streaming(&self, url: &str, task: &mut dyn ProgressTask) -> Result<Bytes> {
-        let resp = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .with_context(|| format!("GET {url}"))?
-            .error_for_status()
-            .with_context(|| format!("response error for {url}"))?;
-        if let Some(total) = resp.content_length() {
-            task.set_total(total);
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            let outcome: reqwest::Result<Bytes> = async {
+                let resp = self.client.get(url).send().await?.error_for_status()?;
+                if let Some(total) = resp.content_length() {
+                    task.set_total(total);
+                }
+                let mut buf: Vec<u8> = Vec::new();
+                let mut stream = resp.bytes_stream();
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk?;
+                    task.advance(chunk.len() as u64);
+                    buf.extend_from_slice(&chunk);
+                }
+                Ok(Bytes::from(buf))
+            }
+            .await;
+            match outcome {
+                Ok(b) => return Ok(b),
+                Err(e) => {
+                    let retry = attempt < MAX_HTTP_ATTEMPTS
+                        && is_retryable(e.status(), reqwest_is_transient(&e));
+                    if !retry {
+                        return Err(e).with_context(|| {
+                            format!("download {url} (after {attempt} attempt(s))")
+                        });
+                    }
+                    // A retried stream re-reads from the top; the progress
+                    // bar may tick past 100% on the rare retry, which is
+                    // cosmetic.
+                    tokio::time::sleep(http_backoff(attempt)).await;
+                }
+            }
         }
-        let mut buf: Vec<u8> = Vec::new();
-        let mut stream = resp.bytes_stream();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.with_context(|| format!("stream chunk from {url}"))?;
-            task.advance(chunk.len() as u64);
-            buf.extend_from_slice(&chunk);
-        }
-        Ok(Bytes::from(buf))
     }
 
     async fn get_text_authenticated(&self, url: &str) -> Result<String> {
-        let req = self.client.get(url);
-        let req = self.attach_gh_auth(req);
-        Ok(req
-            .send()
-            .await
-            .with_context(|| format!("GET {url}"))?
-            .error_for_status()
-            .with_context(|| format!("response error for {url}"))?
-            .text()
-            .await?)
+        self.run_with_retry(
+            url,
+            || self.attach_gh_auth(self.client.get(url)),
+            |r| r.text(),
+        )
+        .await
     }
 
     fn as_reqwest_client(&self) -> Option<&reqwest::Client> {
@@ -239,5 +306,36 @@ pub mod mock {
                 .unwrap()
                 .contains("\"a\":1"));
         }
+    }
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::{http_backoff, is_retryable, HTTP_BACKOFF_BASE_MS};
+    use reqwest::StatusCode;
+
+    #[test]
+    fn transport_errors_retry_5xx_and_429_retry_other_4xx_dont() {
+        // No status → transport blip: retry only when the transport flag is set.
+        assert!(is_retryable(None, true));
+        assert!(!is_retryable(None, false));
+        // Server errors and rate-limit: retry.
+        assert!(is_retryable(Some(StatusCode::INTERNAL_SERVER_ERROR), false));
+        assert!(is_retryable(Some(StatusCode::BAD_GATEWAY), false));
+        assert!(is_retryable(Some(StatusCode::TOO_MANY_REQUESTS), false));
+        // Definitive client answers: never retry.
+        assert!(!is_retryable(Some(StatusCode::NOT_FOUND), true));
+        assert!(!is_retryable(Some(StatusCode::UNAUTHORIZED), false));
+        assert!(!is_retryable(Some(StatusCode::OK), false));
+    }
+
+    #[test]
+    fn backoff_grows_and_caps() {
+        let ms = |a| http_backoff(a).as_millis() as u64;
+        assert_eq!(ms(1), HTTP_BACKOFF_BASE_MS); // 250
+        assert_eq!(ms(2), HTTP_BACKOFF_BASE_MS * 2); // 500
+        assert_eq!(ms(3), HTTP_BACKOFF_BASE_MS * 4); // 1000
+                                                     // Exponent caps so a high attempt count can't explode the delay.
+        assert_eq!(ms(50), HTTP_BACKOFF_BASE_MS * 16);
     }
 }
