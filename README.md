@@ -26,7 +26,7 @@ brew install O6lvl4/tap/qusp
 ### Cargo
 
 ```bash
-cargo install --git https://github.com/O6lvl4/qusp --tag v0.29.1 --bin qusp
+cargo install --git https://github.com/O6lvl4/qusp --tag v0.32.0 --bin qusp
 ```
 
 ### Pre-built binaries
@@ -214,7 +214,7 @@ and design decisions.
 
 ## Status
 
-**v0.29.1** — 23 languages, symlink farm, global pins, VSCode/GUI integration.
+**v0.32.0** — 23 languages, symlink farm, global pins, VSCode/GUI integration.
 
 - Symlink farm: `qusp install` + `qusp pin set` exposes bare commands in `~/.local/bin/`
 - Global pins: per-language version control for unversioned bare commands
