@@ -131,7 +131,7 @@ $ which python
 | **dart** | dart.dev releases | sha256 | — |
 | **elm** | elm/compiler GitHub releases | content-addressed | — |
 | **gleam** | gleam-lang/gleam releases | sha256 + sigstore | — |
-| **erlang** | erlef/otp_builds prebuilts (macOS-only) | sigstore digest | — (rebar3/mix) |
+| **erlang** | macOS: erlef/otp_builds · Linux glibc: builds.hex.pm (exp.) | sigstore digest / sha256 | — (rebar3/mix) |
 | **elixir** | elixir-lang/elixir precompiled | sha256 | mix, iex (requires `[erlang]`) |
 | **lua** | lua.org source (compiled locally) | sha256 | — |
 | **php** | php-build-standalone | sha256 | — |
@@ -221,9 +221,10 @@ and design decisions.
 - `qusp setup`: one-time `/etc/paths.d/qusp` for GUI app visibility
 - `qusp doctor`: health check with PATH, pins, and integration diagnostics
 - Content-addressed store with strict hash verification on every install
-- BEAM stack: Erlang (erlef/otp_builds prebuilts, Sigstore-attested digest) +
-  Elixir (precompiled, `requires = ["erlang"]`, installed dependency-first) —
-  macOS-only for now; Linux awaits upstream prebuilts
+- BEAM stack: Erlang (macOS: erlef/otp_builds + Sigstore digest; Linux glibc:
+  builds.hex.pm + sha256, **experimental**) + Elixir (precompiled, arch-neutral,
+  `requires = ["erlang"]`, installed dependency-first). Alpine/musl rejected;
+  override the Ubuntu flavor with `QUSP_OTP_UBUNTU`
 - Tested on macOS x86_64 (daily dogfood), CI on macOS arm64 + Linux + Windows
 
 ## Roadmap

@@ -2,10 +2,18 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-# erlef/otp_builds only publishes macOS prebuilts.
-[ "$(uname -s)" = "Darwin" ] || skip "erlang prebuilds (erlef/otp_builds) are macOS-only"
-
-VERSION="${ERLANG_VERSION:-27.3.4.3}"
+# macOS: erlef/otp_builds (fully supported). Linux: builds.hex.pm
+# (experimental, glibc-only) — opt in with QUSP_E2E_LINUX=1 so default CI
+# stays green on the unvalidated runtime.
+case "$(uname -s)" in
+  Darwin) VERSION="${ERLANG_VERSION:-27.3.4.3}" ;;  # erlef/otp_builds patch tag
+  Linux)
+    [ "${QUSP_E2E_LINUX:-0}" = "1" ] \
+      || skip "Linux erlang (builds.hex.pm) is experimental — set QUSP_E2E_LINUX=1 to test"
+    VERSION="${ERLANG_VERSION:-27.3}"            # builds.hex.pm / erlang.org tag
+    ;;
+  *) skip "erlang prebuilds cover macOS and Linux(glibc) only" ;;
+esac
 MAJOR="${VERSION%%.*}"
 
 isolate_qusp

@@ -7,19 +7,32 @@
 //! optional wxWidgets / OpenSSL probing) that qusp's prebuilt-first
 //! stance rules out.
 //!
-//! ## macOS-only (for now)
+//! ## Two prebuilt sources, by platform
 //!
-//! `erlef/otp_builds` only publishes macOS prebuilts (Apple Silicon +
-//! Intel) — there are no Linux/Windows artifacts in its releases. On
-//! those platforms we bail with a clear message rather than silently
-//! falling back to a source build.
+//! - **macOS** (fully supported): `erlef/otp_builds` GitHub releases
+//!   (Apple Silicon + Intel), verified via the Sigstore provenance
+//!   digest. This is the daily-dogfood path.
+//! - **Linux glibc** (experimental): `erlef/otp_builds` ships no Linux
+//!   artifacts, so we fall back to the Erlang Ecosystem Foundation's
+//!   `builds.hex.pm` service (the same source `setup-beam` uses),
+//!   verified via the sha256 column of its `builds.txt` manifest. These
+//!   are Ubuntu-built, glibc-linked tarballs — Alpine/musl is rejected.
+//!   The runtime is **not yet validated in qusp's macOS-only dev loop**;
+//!   it rides on Linux CI.
+//! - **Windows / musl / other**: bail with a clear message.
 //!
 //! ## Release / asset layout
 //!
-//!   tag:    `OTP-<version>`            (e.g. `OTP-28.1.2`, `OTP-27.3.4.3`)
-//!   asset:  `otp-aarch64-apple-darwin.tar.gz`
-//!           `otp-x86_64-apple-darwin.tar.gz`
-//!           `<asset>.sigstore`        (one Sigstore bundle per tarball)
+//!   macOS (GitHub erlef/otp_builds):
+//!     tag:    `OTP-<version>`          (e.g. `OTP-28.1.2`, `OTP-27.3.4.3`)
+//!     asset:  `otp-<triple>.tar.gz` + `<asset>.sigstore`
+//!
+//!   Linux (builds.hex.pm):
+//!     base:   `builds/otp/<arch>/<flavor>`   (arch ∈ amd64|arm64;
+//!             flavor e.g. `ubuntu-22.04`)
+//!     asset:  `OTP-<version>.tar.gz`
+//!     verify: the 4th column of `<base>/builds.txt`
+//!             (`OTP-<ver> <ref> <date> <sha256>`)
 //!
 //! The stored / displayed version is the tag with the `OTP-` prefix
 //! stripped. OTP versions can be 2–4 dotted components.
@@ -67,13 +80,76 @@ pub struct ErlangBackend;
 
 const REPO: &str = "erlef/otp_builds";
 
-/// macOS-only prebuilt triple. Linux/Windows return `None` and the
-/// caller bails with the TODO message.
-fn target_triple() -> Option<&'static str> {
+/// macOS prebuilt triple (erlef/otp_builds asset). `None` off macOS.
+fn mac_triple() -> Option<&'static str> {
     Some(match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => "aarch64-apple-darwin",
         ("macos", "x86_64") => "x86_64-apple-darwin",
         _ => return None,
+    })
+}
+
+/// builds.hex.pm arch slug for the current Linux host. `None` if the
+/// arch isn't published there.
+fn linux_arch() -> Option<&'static str> {
+    Some(match std::env::consts::ARCH {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        _ => return None,
+    })
+}
+
+/// builds.hex.pm OS flavor (`ubuntu-XX.YY`). Honors `QUSP_OTP_UBUNTU`
+/// (e.g. `22.04` or `ubuntu-22.04`), else matches the host Ubuntu
+/// version when builds.hex.pm publishes it, else a broad default.
+fn linux_flavor() -> String {
+    const PUBLISHED: [&str; 3] = ["20.04", "22.04", "24.04"];
+    const DEFAULT: &str = "ubuntu-22.04";
+    if let Ok(v) = std::env::var("QUSP_OTP_UBUNTU") {
+        let v = v.trim().trim_start_matches("ubuntu-");
+        if !v.is_empty() {
+            return format!("ubuntu-{v}");
+        }
+    }
+    if let Some(ver) = os_release_ubuntu_version() {
+        if PUBLISHED.contains(&ver.as_str()) {
+            return format!("ubuntu-{ver}");
+        }
+    }
+    DEFAULT.to_string()
+}
+
+/// The host's `VERSION_ID` if `/etc/os-release` says `ID=ubuntu`.
+fn os_release_ubuntu_version() -> Option<String> {
+    let txt = std::fs::read_to_string("/etc/os-release").ok()?;
+    let mut id = None;
+    let mut ver = None;
+    for line in txt.lines() {
+        if let Some(v) = line.strip_prefix("ID=") {
+            id = Some(v.trim_matches('"').to_string());
+        } else if let Some(v) = line.strip_prefix("VERSION_ID=") {
+            ver = Some(v.trim_matches('"').to_string());
+        }
+    }
+    if id.as_deref() == Some("ubuntu") {
+        ver
+    } else {
+        None
+    }
+}
+
+/// True on musl libc hosts (Alpine etc.), where the glibc-linked
+/// builds.hex.pm tarballs won't run.
+fn is_musl() -> bool {
+    if Path::new("/etc/alpine-release").exists() {
+        return true;
+    }
+    ["/lib", "/usr/lib"].iter().any(|d| {
+        std::fs::read_dir(d)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with("ld-musl-"))
     })
 }
 
@@ -146,40 +222,26 @@ impl Backend for ErlangBackend {
         let _install_guard =
             crate::effects::StoreLock::acquire(&crate::effects::lock_path_for(&install_dir))?;
 
-        let triple = target_triple().ok_or_else(|| {
-            anyhow!(
-                "erlang prebuilds via qusp are macOS-only — erlef/otp_builds \
-                 publishes no Linux/Windows artifacts"
-            )
-        })?;
-
-        let tag = format!("OTP-{v_strip}");
-        let asset = format!("otp-{triple}.tar.gz");
-        let asset_url = format!("https://github.com/{REPO}/releases/download/{tag}/{asset}");
-        let sig_url = format!("{asset_url}.sigstore");
-
-        // Verify against the digest attested in the Sigstore provenance
-        // bundle (there is no plain sha256 sidecar upstream).
-        let sig_text = http
-            .get_text(&sig_url)
-            .await
-            .with_context(|| format!("fetch {sig_url}"))?;
-        let expected = sha256_from_sigstore_bundle(&sig_text).ok_or_else(|| {
-            anyhow!("could not extract a sha256 digest from the Sigstore bundle at {sig_url}")
-        })?;
+        // Per-platform: resolve the download URL + expected sha256
+        // (macOS → GitHub/Sigstore, Linux glibc → builds.hex.pm manifest).
+        let dl = resolve_otp_download(http, &v_strip).await?;
+        let asset = dl.asset;
 
         let mut task = progress.start(&format!("downloading erlang {v_strip}"), None);
         let bytes = http
-            .get_bytes_streaming(&asset_url, task.as_mut())
+            .get_bytes_streaming(&dl.url, task.as_mut())
             .await
-            .with_context(|| format!("download {asset_url}"))?;
+            .with_context(|| format!("download {}", dl.url))?;
         task.finish(format!("downloaded erlang {v_strip}"));
 
         let mut hasher = sha2::Sha256::new();
         hasher.update(&bytes);
         let actual = hex::encode(hasher.finalize());
-        if !expected.eq_ignore_ascii_case(&actual) {
-            bail!("sha256 mismatch for {asset}: expected {expected}, got {actual}");
+        if !dl.sha256.eq_ignore_ascii_case(&actual) {
+            bail!(
+                "sha256 mismatch for {asset}: expected {}, got {actual}",
+                dl.sha256
+            );
         }
 
         // Stage: write to cache, extract into the content-addressed
@@ -269,6 +331,27 @@ impl Backend for ErlangBackend {
     }
 
     async fn list_remote(&self, http: &dyn crate::effects::HttpFetcher) -> Result<Vec<String>> {
+        // Linux pulls the version list from the builds.hex.pm manifest
+        // (same source as install); macOS uses the GitHub release index.
+        if std::env::consts::OS == "linux" {
+            let arch = linux_arch().ok_or_else(|| {
+                anyhow!("erlang Linux prebuilds (builds.hex.pm) cover x86_64 and aarch64 only")
+            })?;
+            let flavor = linux_flavor();
+            let url = format!("https://builds.hex.pm/builds/otp/{arch}/{flavor}/builds.txt");
+            let body = http.get_text(&url).await?;
+            let mut out: Vec<String> = body
+                .lines()
+                .filter_map(|l| l.split_whitespace().next())
+                .filter_map(|tag| tag.strip_prefix("OTP-"))
+                .filter(|v| !v.contains("-rc") && !v.contains("-pre"))
+                .map(|v| v.to_string())
+                .collect();
+            out.sort_by(|a, b| version_cmp(b, a));
+            out.dedup();
+            return Ok(out);
+        }
+
         #[derive(serde::Deserialize)]
         struct R {
             tag_name: String,
@@ -345,7 +428,12 @@ fn has_erts_dir(dir: &Path) -> bool {
 /// layout), `store_dir/otp` (conventional nesting), then a one-level
 /// scan of `store_dir`'s subdirectories.
 fn find_otp_root(store_dir: &Path) -> Option<PathBuf> {
-    let looks_like_otp = |d: &Path| d.join("bin").join("erl").is_file() && has_erts_dir(d);
+    // An OTP root has an `erts-*` dir and either a generated `bin/erl`
+    // (macOS prebuilt, already relocated) or an `Install` script (Linux
+    // source-style tree, whose bin/ is generated during relocation).
+    let looks_like_otp = |d: &Path| {
+        has_erts_dir(d) && (d.join("Install").is_file() || d.join("bin").join("erl").is_file())
+    };
     if looks_like_otp(store_dir) {
         return Some(store_dir.to_path_buf());
     }
@@ -503,6 +591,95 @@ fn replace_quoted_abs_after(content: &str, needle: &str, root: &str) -> (String,
     (out, count)
 }
 
+/// A resolved OTP download: the asset filename, its URL, and the
+/// publisher-published sha256 to verify against.
+struct OtpDownload {
+    asset: String,
+    url: String,
+    sha256: String,
+}
+
+/// Resolve the download URL + expected sha256 for `v_strip` on this
+/// platform. macOS → erlef/otp_builds GitHub release (digest from the
+/// Sigstore provenance bundle). Linux glibc → builds.hex.pm (sha256 from
+/// the per-flavor `builds.txt`). Bails on Windows / musl / unsupported
+/// arch.
+async fn resolve_otp_download(
+    http: &dyn crate::effects::HttpFetcher,
+    v_strip: &str,
+) -> Result<OtpDownload> {
+    match std::env::consts::OS {
+        "macos" => {
+            let triple =
+                mac_triple().ok_or_else(|| anyhow!("unsupported macOS arch for erlang"))?;
+            let tag = format!("OTP-{v_strip}");
+            let asset = format!("otp-{triple}.tar.gz");
+            let url = format!("https://github.com/{REPO}/releases/download/{tag}/{asset}");
+            let sig_url = format!("{url}.sigstore");
+            let sig_text = http
+                .get_text(&sig_url)
+                .await
+                .with_context(|| format!("fetch {sig_url}"))?;
+            let sha256 = sha256_from_sigstore_bundle(&sig_text).ok_or_else(|| {
+                anyhow!("could not extract a sha256 digest from the Sigstore bundle at {sig_url}")
+            })?;
+            Ok(OtpDownload { asset, url, sha256 })
+        }
+        "linux" => {
+            if is_musl() {
+                bail!(
+                    "erlang prebuilds (builds.hex.pm) are glibc-only — Alpine/musl is unsupported. \
+                     Use a glibc distro, or build OTP with kerl/asdf."
+                );
+            }
+            let arch = linux_arch().ok_or_else(|| {
+                anyhow!("erlang Linux prebuilds (builds.hex.pm) cover x86_64 and aarch64 only")
+            })?;
+            let flavor = linux_flavor();
+            let base = format!("https://builds.hex.pm/builds/otp/{arch}/{flavor}");
+            let manifest = http
+                .get_text(&format!("{base}/builds.txt"))
+                .await
+                .with_context(|| format!("fetch builds.hex.pm OTP manifest ({arch}/{flavor})"))?;
+            let sha256 = hexpm_sha256_for(&manifest, v_strip).ok_or_else(|| {
+                anyhow!(
+                    "OTP-{v_strip} not found with a checksum in builds.hex.pm {arch}/{flavor}. \
+                     Run `qusp list-remote erlang` for available versions, or override the \
+                     Ubuntu flavor with QUSP_OTP_UBUNTU (e.g. 20.04|22.04|24.04)."
+                )
+            })?;
+            Ok(OtpDownload {
+                asset: format!("OTP-{v_strip}.tar.gz"),
+                url: format!("{base}/OTP-{v_strip}.tar.gz"),
+                sha256,
+            })
+        }
+        other => bail!("erlang via qusp supports macOS and Linux (glibc) only, not {other}"),
+    }
+}
+
+/// Pick the sha256 for `OTP-<v_strip>` from a builds.hex.pm `builds.txt`
+/// whose lines are `OTP-<ver> <git-ref> <date> <sha256>`. Matches the tag
+/// exactly (so `27.3` doesn't match `27.3.1`) and requires the 4th
+/// column to be a 64-char hex digest (older entries omit it → `None`).
+fn hexpm_sha256_for(manifest: &str, v_strip: &str) -> Option<String> {
+    let tag = format!("OTP-{v_strip}");
+    for line in manifest.lines() {
+        let mut it = line.split_whitespace();
+        if it.next()? != tag {
+            continue;
+        }
+        // remaining cols: git-ref (0), date (1), sha256 (2)
+        let sha = it.nth(2)?;
+        return if sha.len() == 64 && sha.bytes().all(|b| b.is_ascii_hexdigit()) {
+            Some(sha.to_string())
+        } else {
+            None
+        };
+    }
+    None
+}
+
 /// Extract the artifact's sha256 from a Sigstore bundle. Modern bundles
 /// (`bundle.v0.3`) wrap a DSSE in-toto statement whose
 /// `subject[].digest.sha256` is the artifact digest; older bundles use a
@@ -598,13 +775,55 @@ mod tests {
     }
 
     #[test]
-    fn triple_is_macos_only() {
+    fn mac_triple_matches_host_when_on_macos() {
         let got = match (std::env::consts::OS, std::env::consts::ARCH) {
             ("macos", "aarch64") => Some("aarch64-apple-darwin"),
             ("macos", "x86_64") => Some("x86_64-apple-darwin"),
             _ => None,
         };
-        assert_eq!(got, target_triple());
+        assert_eq!(got, mac_triple());
+    }
+
+    #[test]
+    fn linux_arch_slugs() {
+        let got = match std::env::consts::ARCH {
+            "x86_64" => Some("amd64"),
+            "aarch64" => Some("arm64"),
+            _ => None,
+        };
+        assert_eq!(got, linux_arch());
+    }
+
+    #[test]
+    fn linux_flavor_honors_env_override() {
+        // Bare version and `ubuntu-`-prefixed both normalize the same way.
+        std::env::set_var("QUSP_OTP_UBUNTU", "20.04");
+        assert_eq!(linux_flavor(), "ubuntu-20.04");
+        std::env::set_var("QUSP_OTP_UBUNTU", "ubuntu-24.04");
+        assert_eq!(linux_flavor(), "ubuntu-24.04");
+        std::env::remove_var("QUSP_OTP_UBUNTU");
+    }
+
+    #[test]
+    fn hexpm_sha256_matches_exact_tag_with_checksum() {
+        // 4-col lines (with sha) and a 3-col legacy line (no sha).
+        let manifest = "\
+OTP-27.3 05737d130706c7189a8e6750d9c2252d2cc7987e 2025-03-05T10:37:16Z e2ea265a971505cbf7d85620ab7c53b67bfac213039f4b0d75ee45bb6052dafe
+OTP-27.3.1 abc 2025-04-01T00:00:00Z 1111111111111111111111111111111111111111111111111111111111111111
+OTP-27.0 601a012837ea0a5c8095bf24223132824177124d 2024-05-20T09:50:35Z
+";
+        assert_eq!(
+            hexpm_sha256_for(manifest, "27.3").as_deref(),
+            Some("e2ea265a971505cbf7d85620ab7c53b67bfac213039f4b0d75ee45bb6052dafe")
+        );
+        // Exact match: 27.3 must not pick up 27.3.1.
+        assert_eq!(
+            hexpm_sha256_for(manifest, "27.3.1").as_deref(),
+            Some("1111111111111111111111111111111111111111111111111111111111111111")
+        );
+        // Legacy entry without a checksum → unverifiable → None.
+        assert_eq!(hexpm_sha256_for(manifest, "27.0"), None);
+        assert_eq!(hexpm_sha256_for(manifest, "99.9"), None);
     }
 
     #[test]

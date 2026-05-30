@@ -2,11 +2,19 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-# Elixir needs Erlang, whose qusp prebuilds are macOS-only.
-[ "$(uname -s)" = "Darwin" ] || skip "elixir depends on erlang prebuilds (erlef/otp_builds), which are macOS-only"
-
+# Elixir is arch-independent BEAM bytecode (no OS gate of its own); it
+# rides on the Erlang backend. macOS is fully supported; Linux erlang
+# (builds.hex.pm) is experimental — opt in with QUSP_E2E_LINUX=1.
 VERSION="${ELIXIR_VERSION:-1.18.4}"
-ERLANG_VERSION="${ERLANG_VERSION:-27.3.4.3}"
+case "$(uname -s)" in
+  Darwin) ERLANG_VERSION="${ERLANG_VERSION:-27.3.4.3}" ;;
+  Linux)
+    [ "${QUSP_E2E_LINUX:-0}" = "1" ] \
+      || skip "Linux erlang (builds.hex.pm) is experimental — set QUSP_E2E_LINUX=1 to test"
+    ERLANG_VERSION="${ERLANG_VERSION:-27.3}"
+    ;;
+  *) skip "erlang prebuilds cover macOS and Linux(glibc) only" ;;
+esac
 
 isolate_qusp
 
