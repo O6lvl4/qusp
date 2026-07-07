@@ -14,6 +14,10 @@ pub enum PinCmd {
     /// for multi-vendor backends (java).
     Set {
         lang: String,
+        // Give the positional a distinct clap id: the field name `version`
+        // otherwise collides with the auto-generated `--version` flag
+        // (propagated to subcommands), tripping clap's uniqueness assert.
+        #[arg(id = "pin_version", value_name = "VERSION")]
         version: String,
         #[arg(long)]
         distribution: Option<String>,
