@@ -321,7 +321,15 @@ impl Backend for RubyBackend {
         // ruby-builder binaries have hardcoded absolute paths from the
         // GitHub Actions runner. Patch them to point at the actual location.
         #[cfg(target_os = "macos")]
-        patch_macos_dylib_paths(&real_root)?;
+        {
+            patch_macos_dylib_paths(&real_root)?;
+            // Vendor the Homebrew libs the extensions link against (gmp,
+            // openssl@3, libyaml, …) so ruby works without Homebrew.
+            vendor_homebrew_dylibs(&real_root, http).await?;
+            // ruby-builder binaries aren't relocatable — expose them through
+            // env-setting farm wrappers instead of bare symlinks.
+            write_farm_wrappers(&real_root)?;
+        }
 
         if let Some(parent) = install_dir.parent() {
             anyv_core::paths::ensure_dir(parent)?;
@@ -482,27 +490,46 @@ impl Backend for RubyBackend {
         new_path.push(":");
         new_path.push(&path);
 
-        let status = Command::new(&gem_bin)
-            .args([
-                "install",
-                &resolved.package,
-                "-v",
-                &resolved.version,
-                "-i",
-                &dest.to_string_lossy(),
-                "--no-document",
-                "--no-update-sources",
-            ])
-            .env("PATH", new_path)
-            .env("GEM_HOME", &dest)
-            .env("GEM_PATH", &dest)
-            .status()
-            .with_context(|| {
-                format!(
-                    "spawn gem install {}@{}",
-                    resolved.package, resolved.version
-                )
-            })?;
+        let mut cmd = Command::new(&gem_bin);
+        cmd.args([
+            "install",
+            &resolved.package,
+            "-v",
+            &resolved.version,
+            "-i",
+            &dest.to_string_lossy(),
+            "--no-document",
+            "--no-update-sources",
+        ])
+        .env("PATH", new_path)
+        .env("GEM_HOME", &dest);
+
+        // The relocated ruby needs its full env even to run `gem` itself —
+        // rubygems loads stdlib and fetches over TLS via the vendored
+        // openssl. GEM_PATH also gets the store's default gems.
+        #[cfg(target_os = "macos")]
+        {
+            let store_gems = {
+                let lib = ruby_dir.join("lib");
+                let ver = detect_ruby_lib_version(&lib);
+                lib.join("ruby").join("gems").join(&ver)
+            };
+            cmd.env(
+                "GEM_PATH",
+                format!("{}:{}", dest.display(), store_gems.display()),
+            );
+            for (k, v) in ruby_env_vars(&ruby_dir) {
+                if k == "RUBYLIB" || k == "DYLD_FALLBACK_LIBRARY_PATH" {
+                    cmd.env(k, v);
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        cmd.env("GEM_PATH", &dest);
+
+        let status = cmd.status().with_context(|| {
+            format!("spawn gem install {}@{}", resolved.package, resolved.version)
+        })?;
         if !status.success() {
             bail!(
                 "gem install {}@{} failed (exit {:?})",
@@ -534,24 +561,33 @@ impl Backend for RubyBackend {
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
         let paths = common::qusp_paths()?;
         let root = common::lang_root(&paths, "ruby", version);
-        // ruby-builder binaries have $LOAD_PATH baked into the binary at
-        // compile time. Override via RUBYLIB so stdlib + extensions resolve.
-        let lib = root.join("lib");
-        let ruby_ver = detect_ruby_lib_version(&lib);
-        let arch = detect_ruby_arch(&lib, &ruby_ver);
-        let rubylib = format!(
-            "{}:{}",
-            lib.join("ruby").join(&ruby_ver).display(),
-            lib.join("ruby").join(&ruby_ver).join(&arch).display(),
-        );
-        let mut env: std::collections::BTreeMap<String, String> =
-            [("RUBYLIB".to_string(), rubylib)].into_iter().collect();
-        // ruby-builder prebuilts on Linux dynamically link libruby.so which
-        // lives inside the install tree. Without LD_LIBRARY_PATH the loader
-        // cannot find it.
-        if cfg!(target_os = "linux") {
+        let mut env: std::collections::BTreeMap<String, String> = Default::default();
+
+        // ruby-builder binaries bake $LOAD_PATH (and, on macOS, Homebrew
+        // dylib paths) at compile time. Override via env so stdlib, RubyGems,
+        // and the vendored Homebrew libs resolve at the real install location.
+        #[cfg(target_os = "macos")]
+        for (k, v) in ruby_env_vars(&root) {
+            env.insert(k, v);
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            let lib = root.join("lib");
+            let ruby_ver = detect_ruby_lib_version(&lib);
+            let arch = detect_ruby_arch(&lib, &ruby_ver);
+            env.insert(
+                "RUBYLIB".to_string(),
+                format!(
+                    "{}:{}",
+                    lib.join("ruby").join(&ruby_ver).display(),
+                    lib.join("ruby").join(&ruby_ver).join(&arch).display(),
+                ),
+            );
+            // libruby.so lives inside the install tree; loader needs it.
             env.insert("LD_LIBRARY_PATH".to_string(), lib.display().to_string());
         }
+
         Ok(RunEnv {
             path_prepend: vec![root.join("bin")],
             env,
@@ -559,18 +595,28 @@ impl Backend for RubyBackend {
     }
 
     fn farm_binaries(&self, _version: &str) -> Vec<crate::effects::FarmBinary> {
-        use crate::effects::FarmBinary;
-        vec![
-            FarmBinary::unversioned("ruby"),
-            FarmBinary::unversioned("irb"),
-            FarmBinary::unversioned("gem"),
-            FarmBinary::unversioned("bundle"),
-            FarmBinary::unversioned("bundler"),
-            FarmBinary::unversioned("rake"),
-            FarmBinary::unversioned("rdoc"),
-            FarmBinary::unversioned("ri"),
-            FarmBinary::unversioned("erb"),
-        ]
+        // On macOS the farm entries point at env-setting wrapper scripts
+        // (`farm/<name>`) rather than the non-relocatable real binaries.
+        #[cfg(target_os = "macos")]
+        {
+            use crate::effects::{FarmBinary, FarmKind};
+            RUBY_FARM_BINS
+                .iter()
+                .map(|b| FarmBinary {
+                    source: format!("farm/{b}"),
+                    link_name: (*b).to_string(),
+                    kind: FarmKind::Unversioned,
+                })
+                .collect()
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            use crate::effects::FarmBinary;
+            RUBY_FARM_BINS
+                .iter()
+                .map(|b| FarmBinary::unversioned(*b))
+                .collect()
+        }
     }
 }
 
@@ -772,7 +818,10 @@ fn patch_text_configs_recursive(dir: &Path, old_prefix: &str, new_prefix: &str) 
                     .file_name()
                     .and_then(|n| n.to_str())
                     .map(|n| n == "Makefile")
-                    .unwrap_or(false);
+                    .unwrap_or(false)
+                // Extension-less scripts under bin/ (gem, bundle, rake, …) bake
+                // the runner path into their `#!` shebang line — rewrite those too.
+                || path.parent().map(|p| p.ends_with("bin")).unwrap_or(false);
             if !dominated {
                 continue;
             }
@@ -786,3 +835,339 @@ fn patch_text_configs_recursive(dir: &Path, old_prefix: &str, new_prefix: &str) 
     }
     Ok(())
 }
+
+// ─── macOS: vendor the Homebrew dylib closure ───────────────────────
+//
+// ruby-builder's macOS binaries are compiled on GitHub Actions runners
+// where Homebrew is present, so `bin/ruby`, `libruby`, and native
+// extension `.bundle`s link against Homebrew libs by absolute path
+// (`/opt/homebrew/opt/<formula>/lib/<dylib>` — gmp, openssl@3, libyaml).
+// On a machine without Homebrew those fail to load. We download the full
+// closure of referenced Homebrew formulae (as bottles, straight from
+// ghcr) into `<root>/vendor-lib/` and expose it at runtime via
+// `DYLD_FALLBACK_LIBRARY_PATH` (set in build_run_env, the farm wrappers,
+// and gem-install) — keeping qusp free of any Homebrew requirement.
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Deserialize)]
+struct BrewFormula {
+    bottle: BrewBottle,
+}
+#[cfg(target_os = "macos")]
+#[derive(serde::Deserialize)]
+struct BrewBottle {
+    stable: BrewBottleStable,
+}
+#[cfg(target_os = "macos")]
+#[derive(serde::Deserialize)]
+struct BrewBottleStable {
+    files: std::collections::HashMap<String, BrewBottleFile>,
+}
+#[cfg(target_os = "macos")]
+#[derive(serde::Deserialize)]
+struct BrewBottleFile {
+    url: String,
+    sha256: String,
+}
+
+/// Vendor every Homebrew dylib the ruby tree links against into
+/// `<root>/vendor-lib/`. Best-effort: a formula that can't be fetched is
+/// logged and skipped rather than failing the whole install.
+#[cfg(target_os = "macos")]
+async fn vendor_homebrew_dylibs(
+    root: &Path,
+    http: &dyn crate::effects::HttpFetcher,
+) -> Result<()> {
+    let mut queue: Vec<String> = collect_homebrew_formulae(root).into_iter().collect();
+    if queue.is_empty() {
+        return Ok(());
+    }
+    let vendor = root.join("vendor-lib");
+    anyv_core::paths::ensure_dir(&vendor)?;
+    let client = require_reqwest(http)?;
+    let tag = macos_bottle_tag();
+
+    let mut seen: std::collections::BTreeSet<String> = Default::default();
+    while let Some(formula) = queue.pop() {
+        if !seen.insert(formula.clone()) {
+            continue;
+        }
+        match fetch_and_extract_bottle(client, &formula, &tag, &vendor).await {
+            Ok(new_dylibs) => {
+                // Follow the closure: a vendored dylib may itself link more
+                // Homebrew formulae (e.g. openssl@3 → nothing, but be safe).
+                for d in &new_dylibs {
+                    for f in collect_homebrew_formulae_in_file(d) {
+                        if !seen.contains(&f) {
+                            queue.push(f);
+                        }
+                    }
+                }
+            }
+            Err(e) => tracing::warn!("qusp: could not vendor Homebrew formula '{formula}': {e:#}"),
+        }
+    }
+
+    // arm64 refuses to load unsigned code; ad-hoc re-sign each vendored lib.
+    if let Ok(rd) = std::fs::read_dir(&vendor) {
+        for e in rd.flatten() {
+            let _ = Command::new("codesign")
+                .args(["-f", "-s", "-"])
+                .arg(e.path())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+    Ok(())
+}
+
+/// Homebrew formula names referenced anywhere in the tree's Mach-O files.
+#[cfg(target_os = "macos")]
+fn collect_homebrew_formulae(root: &Path) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    collect_hb_recursive(root, &mut out);
+    out
+}
+
+#[cfg(target_os = "macos")]
+fn collect_hb_recursive(dir: &Path, out: &mut std::collections::BTreeSet<String>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            collect_hb_recursive(&p, out);
+            continue;
+        }
+        let macho = p
+            .extension()
+            .and_then(|x| x.to_str())
+            .map(|x| x == "dylib" || x == "bundle")
+            .unwrap_or(false)
+            || p.parent().map(|d| d.ends_with("bin")).unwrap_or(false);
+        if macho {
+            for f in collect_homebrew_formulae_in_file(&p) {
+                out.insert(f);
+            }
+        }
+    }
+}
+
+/// Parse `otool -L` output for `/opt/homebrew/opt/<formula>/…` (and the
+/// Intel `/usr/local/opt/…`) references, returning the formula names.
+#[cfg(target_os = "macos")]
+fn collect_homebrew_formulae_in_file(file: &Path) -> Vec<String> {
+    let Ok(o) = Command::new("otool").args(["-L"]).arg(file).output() else {
+        return vec![];
+    };
+    let text = String::from_utf8_lossy(&o.stdout);
+    let mut v = vec![];
+    for line in text.lines() {
+        let s = line.split_whitespace().next().unwrap_or("");
+        for prefix in ["/opt/homebrew/opt/", "/usr/local/opt/"] {
+            if let Some(rest) = s.strip_prefix(prefix) {
+                if let Some(f) = rest.split('/').next() {
+                    if !f.is_empty() {
+                        v.push(f.to_string());
+                    }
+                }
+            }
+        }
+    }
+    v
+}
+
+/// Fetch one Homebrew formula's bottle and copy its `*.dylib`s into
+/// `vendor`. Returns the paths of dylibs newly copied.
+#[cfg(target_os = "macos")]
+async fn fetch_and_extract_bottle(
+    client: &reqwest::Client,
+    formula: &str,
+    tag: &str,
+    vendor: &Path,
+) -> Result<Vec<PathBuf>> {
+    let api = format!("https://formulae.brew.sh/api/formula/{formula}.json");
+    let text = client
+        .get(&api)
+        .header("User-Agent", "qusp")
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    let f: BrewFormula =
+        serde_json::from_str(&text).with_context(|| format!("parse formula json for {formula}"))?;
+    let file = pick_bottle(&f.bottle.stable.files, tag)
+        .ok_or_else(|| anyhow!("no bottle for {formula} (looked for tag {tag})"))?;
+
+    // ghcr blob download uses the well-known anonymous bearer token.
+    let bytes = client
+        .get(&file.url)
+        .header("Authorization", "Bearer QQ==")
+        .send()
+        .await?
+        .error_for_status()?
+        .bytes()
+        .await?;
+    {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(&bytes);
+        let got = hex::encode(h.finalize());
+        if got != file.sha256 {
+            bail!("sha256 mismatch for {formula} bottle (got {got}, want {})", file.sha256);
+        }
+    }
+
+    let tmp = vendor.join(format!(".extract-{}", formula.replace(['/', '@'], "_")));
+    if tmp.exists() {
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+    anyv_core::paths::ensure_dir(&tmp)?;
+    let tarball = tmp.join("bottle.tar.gz");
+    std::fs::write(&tarball, &bytes)?;
+    extract_archive(&tarball, &tmp)?;
+
+    let mut copied = vec![];
+    copy_dylibs_recursive(&tmp, vendor, &mut copied)?;
+    std::fs::remove_dir_all(&tmp).ok();
+    Ok(copied)
+}
+
+/// Choose the bottle file for this platform: exact OS tag, then older
+/// macOS fallbacks (bottles are forward-compatible), then `all`.
+#[cfg(target_os = "macos")]
+fn pick_bottle<'a>(
+    files: &'a std::collections::HashMap<String, BrewBottleFile>,
+    tag: &str,
+) -> Option<&'a BrewBottleFile> {
+    let arch = if cfg!(target_arch = "aarch64") {
+        "arm64_"
+    } else {
+        ""
+    };
+    let candidates = [
+        tag.to_string(),
+        format!("{arch}tahoe"),
+        format!("{arch}sequoia"),
+        format!("{arch}sonoma"),
+        format!("{arch}ventura"),
+        format!("{arch}monterey"),
+        "all".to_string(),
+    ];
+    candidates.iter().find_map(|k| files.get(k))
+}
+
+#[cfg(target_os = "macos")]
+fn copy_dylibs_recursive(dir: &Path, vendor: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    for e in std::fs::read_dir(dir)?.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            copy_dylibs_recursive(&p, vendor, out)?;
+            continue;
+        }
+        if p.extension().and_then(|x| x.to_str()) == Some("dylib") {
+            if let Some(name) = p.file_name() {
+                let dest = vendor.join(name);
+                if !dest.exists() {
+                    std::fs::copy(&p, &dest).with_context(|| format!("copy {}", p.display()))?;
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o755));
+                    out.push(dest);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Map the running macOS version to its Homebrew bottle tag.
+#[cfg(target_os = "macos")]
+fn macos_bottle_tag() -> String {
+    let major = Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().split('.').next().map(str::to_string))
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(15);
+    let name = match major {
+        26.. => "tahoe",
+        15 => "sequoia",
+        14 => "sonoma",
+        13 => "ventura",
+        _ => "monterey",
+    };
+    if cfg!(target_arch = "aarch64") {
+        format!("arm64_{name}")
+    } else {
+        name.to_string()
+    }
+}
+
+// ─── macOS: runtime env + farm wrappers ─────────────────────────────
+
+/// The env that makes a relocated ruby-builder ruby fully functional:
+/// stdlib/RubyGems load paths, gem paths, and the vendored Homebrew libs.
+#[cfg(target_os = "macos")]
+fn ruby_env_vars(root: &Path) -> Vec<(String, String)> {
+    let lib = root.join("lib");
+    let ver = detect_ruby_lib_version(&lib);
+    let arch = detect_ruby_arch(&lib, &ver);
+    let ruby_lib = lib.join("ruby");
+    let rubylib = format!(
+        "{}:{}:{}",
+        ruby_lib.join(&ver).display(),
+        ruby_lib.join(&ver).join(&arch).display(),
+        ruby_lib.join("site_ruby").join(&ver).display(),
+    );
+    let gems = ruby_lib.join("gems").join(&ver);
+    let vendor = root.join("vendor-lib");
+    vec![
+        ("RUBYLIB".to_string(), rubylib),
+        ("GEM_HOME".to_string(), gems.display().to_string()),
+        ("GEM_PATH".to_string(), gems.display().to_string()),
+        (
+            "DYLD_FALLBACK_LIBRARY_PATH".to_string(),
+            format!("{}:/usr/lib", vendor.display()),
+        ),
+    ]
+}
+
+/// Write farm wrapper scripts under `<root>/farm/`. ruby-builder binaries
+/// aren't relocatable (their `$LOAD_PATH` is baked to the CI runner path),
+/// so a bare farm symlink can't find stdlib/gems/dylibs. Each wrapper sets
+/// the env from [`ruby_env_vars`] and execs the real binary — the farm
+/// symlinks point here instead of at `bin/`.
+#[cfg(target_os = "macos")]
+fn write_farm_wrappers(root: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let farm = root.join("farm");
+    anyv_core::paths::ensure_dir(&farm)?;
+    let exports: String = ruby_env_vars(root)
+        .iter()
+        .map(|(k, v)| format!("export {k}=\"{v}\"\n"))
+        .collect();
+    for b in RUBY_FARM_BINS {
+        let real = root.join("bin").join(b);
+        if !real.exists() {
+            continue;
+        }
+        let script = format!(
+            "#!/bin/sh\n# generated by qusp — relocated ruby-builder wrapper\n{exports}exec \"{}\" \"$@\"\n",
+            real.display()
+        );
+        let wp = farm.join(b);
+        std::fs::write(&wp, script).with_context(|| format!("write wrapper {}", wp.display()))?;
+        std::fs::set_permissions(&wp, std::fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(())
+}
+
+/// Ruby binaries exposed in the global farm (as wrappers on macOS).
+const RUBY_FARM_BINS: &[&str] = &[
+    "ruby", "irb", "gem", "bundle", "bundler", "rake", "rdoc", "ri", "erb",
+];
