@@ -1,4 +1,4 @@
-//! qusp CLI — v0.30.0.
+//! qusp CLI — v0.32.2.
 //!
 //! Native Go/Ruby/Python backends + orchestrator. Two entry-point
 //! styles, by design:
