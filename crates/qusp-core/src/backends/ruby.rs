@@ -564,6 +564,8 @@ impl Backend for RubyBackend {
     fn build_run_env(&self, _: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
         let paths = common::qusp_paths()?;
         let root = common::lang_root(&paths, "ruby", version);
+        // Only filled in on macOS / Linux.
+        #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(unused_mut))]
         let mut env: std::collections::BTreeMap<String, String> = Default::default();
 
         // ruby-builder binaries bake $LOAD_PATH (and, on macOS, Homebrew
@@ -662,6 +664,7 @@ fn tool_gem_home(paths: &AnyvPaths, ruby_version: &str, gem: &str, gem_version: 
 }
 
 /// Detect the Ruby stdlib version directory (e.g., "3.4.0") under lib/ruby/.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn detect_ruby_lib_version(lib: &Path) -> String {
     let ruby_dir = lib.join("ruby");
     if let Ok(entries) = std::fs::read_dir(&ruby_dir) {
@@ -682,6 +685,7 @@ fn detect_ruby_lib_version(lib: &Path) -> String {
 }
 
 /// Detect the platform-specific subdirectory (e.g., "x86_64-darwin24").
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn detect_ruby_arch(lib: &Path, ruby_ver: &str) -> String {
     let ver_dir = lib.join("ruby").join(ruby_ver);
     if let Ok(entries) = std::fs::read_dir(&ver_dir) {
