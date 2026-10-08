@@ -87,7 +87,6 @@ impl<'a> Orchestrator<'a> {
         // Load global pins once for the post-install farm pass.
         let global_pins = crate::effects::GlobalPins::load(&self.paths.config).unwrap_or_default();
         let farm = crate::effects::FarmManager::default();
-        let store_root = self.paths.store();
 
         for layer in layers {
             let mut futs = Vec::new();
@@ -144,7 +143,7 @@ impl<'a> Orchestrator<'a> {
                                 &report,
                                 &global_pins,
                                 &farm,
-                                &store_root,
+                                self.paths,
                             );
                         }
                         installed.push(InstallSummary {
@@ -315,11 +314,12 @@ impl<'a> Orchestrator<'a> {
         report: &crate::backend::InstallReport,
         global_pins: &crate::effects::GlobalPins,
         farm: &crate::effects::FarmManager,
-        store_root: &std::path::Path,
+        paths: &anyv_core::Paths,
     ) {
         let Some(backend) = registry.get(lang) else {
             return;
         };
+        let store_root = backend.store_root(paths);
         let bins = backend.farm_binaries(version);
         if bins.is_empty() {
             return;
@@ -328,7 +328,7 @@ impl<'a> Orchestrator<'a> {
             .get(lang)
             .map(|p| p.version == version)
             .unwrap_or(false);
-        if let Err(e) = farm.install_links(&report.install_dir, &bins, pin_matches, store_root) {
+        if let Err(e) = farm.install_links(&report.install_dir, &bins, pin_matches, &store_root) {
             tracing::warn!("farm: link install failed for {lang} {version}: {e:#}");
         }
     }

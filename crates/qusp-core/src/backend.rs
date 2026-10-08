@@ -225,4 +225,18 @@ pub trait Backend: Send + Sync {
     fn farm_binaries(&self, _version: &str) -> Vec<FarmBinary> {
         Vec::new()
     }
+
+    /// Where an installed `version` lives on disk. Default: qusp's own
+    /// data dir. Backends that delegate storage to another tool (go → gv)
+    /// override this, otherwise `qusp pin set` can't find the install.
+    fn install_dir(&self, paths: &Paths, version: &str) -> PathBuf {
+        paths.data.join(self.id()).join(version)
+    }
+
+    /// Content-addressed store this backend's installs resolve into.
+    /// Farm links pointing here are qusp-owned (replaceable on upgrade);
+    /// anything else is treated as foreign and left alone.
+    fn store_root(&self, paths: &Paths) -> PathBuf {
+        paths.store()
+    }
 }

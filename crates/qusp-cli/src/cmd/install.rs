@@ -82,7 +82,7 @@ fn materialize_farm(
         .map(|p| p.version == report.version)
         .unwrap_or(false);
     let farm = qusp_core::effects::FarmManager::default();
-    let store_root = paths.store();
+    let store_root = backend.store_root(paths);
     match farm.install_links(&report.install_dir, &bins, pin_matches, &store_root) {
         Ok(r) => {
             if !r.linked.is_empty() {

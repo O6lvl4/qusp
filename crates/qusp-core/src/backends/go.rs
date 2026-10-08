@@ -180,6 +180,21 @@ impl Backend for GoBackend {
         gv_core::tool::tool_bin_path(&paths, &gv_locked)
     }
 
+    // Go installs live in gv's data dir, not qusp's. Point the farm there.
+    fn install_dir(&self, qusp_paths: &AnyvPaths, version: &str) -> PathBuf {
+        match gv_core::paths::discover() {
+            Ok(p) => p.version_dir(&gv_core::release::normalize_version(version)),
+            Err(_) => qusp_paths.data.join(self.id()).join(version),
+        }
+    }
+
+    fn store_root(&self, qusp_paths: &AnyvPaths) -> PathBuf {
+        match gv_core::paths::discover() {
+            Ok(p) => p.store(),
+            Err(_) => qusp_paths.store(),
+        }
+    }
+
     fn build_run_env(&self, _qusp_paths: &AnyvPaths, version: &str, _cwd: &Path) -> Result<RunEnv> {
         let paths = gv_core::paths::discover()?;
         let canonical = gv_core::release::normalize_version(version);

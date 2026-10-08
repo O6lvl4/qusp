@@ -186,7 +186,10 @@ impl Backend for RustBackend {
             FarmBinary::unversioned("rustc"),
             FarmBinary::unversioned("rustdoc"),
             FarmBinary::unversioned("rustfmt"),
+            // `cargo fmt` / `cargo clippy` dispatch to these via PATH.
+            FarmBinary::unversioned("cargo-fmt"),
             FarmBinary::unversioned("clippy-driver"),
+            FarmBinary::unversioned("cargo-clippy"),
             FarmBinary::unversioned("rust-analyzer"),
             FarmBinary::unversioned("rust-gdb"),
             FarmBinary::unversioned("rust-lldb"),
