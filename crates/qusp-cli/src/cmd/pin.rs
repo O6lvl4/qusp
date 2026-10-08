@@ -98,12 +98,12 @@ fn refresh_farm_links(
     if bins.is_empty() {
         return;
     }
-    let install_dir = paths.data.join(backend.id()).join(resolved);
+    let install_dir = backend.install_dir(paths, resolved);
     if !install_dir.exists() {
         return;
     }
     let farm = FarmManager::default();
-    let store_root = paths.store();
+    let store_root = backend.store_root(paths);
     if let Ok(r) = farm.install_links(&install_dir, &bins, true, &store_root) {
         if !r.linked.is_empty() {
             say!("  + farm: {}", r.linked.join(", "));
