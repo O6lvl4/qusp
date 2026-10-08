@@ -21,6 +21,8 @@ use futures_util::StreamExt;
 
 use super::progress::ProgressTask;
 
+// See Backend: async_trait + clippy::double_must_use.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait HttpFetcher: Send + Sync {
     async fn get_text(&self, url: &str) -> Result<String>;

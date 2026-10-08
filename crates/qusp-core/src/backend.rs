@@ -118,6 +118,9 @@ pub struct RunEnv {
 }
 
 /// The trait every language backend implements.
+// async_trait expands to `#[must_use]` on fns returning `Pin<Box<dyn Future>>`,
+// which newer clippy flags as double_must_use.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Backend: Send + Sync {
     /// Stable id used as the section name in `qusp.toml` (`go`, `ruby`,

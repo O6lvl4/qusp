@@ -162,10 +162,10 @@ impl Renderable for DoctorOutput {
     fn render_text(&self) {
         use anyv_core::presentation::{bold, cyan, green, yellow};
         println!("{}", bold("qusp doctor"));
-        println!("  qusp       : {}", &self.qusp_version);
-        println!("  data dir   : {}", &self.paths.data);
-        println!("  config dir : {}", &self.paths.config);
-        println!("  cache dir  : {}", &self.paths.cache);
+        println!("  qusp       : {}", self.qusp_version);
+        println!("  data dir   : {}", self.paths.data);
+        println!("  config dir : {}", self.paths.config);
+        println!("  cache dir  : {}", self.paths.cache);
         let ids: Vec<&str> = self.backends.iter().map(|b| b.id.as_str()).collect();
         println!("  backends   : {}", ids.join(", "));
         for b in &self.backends {

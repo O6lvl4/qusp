@@ -528,7 +528,10 @@ impl Backend for RubyBackend {
         cmd.env("GEM_PATH", &dest);
 
         let status = cmd.status().with_context(|| {
-            format!("spawn gem install {}@{}", resolved.package, resolved.version)
+            format!(
+                "spawn gem install {}@{}",
+                resolved.package, resolved.version
+            )
         })?;
         if !status.success() {
             bail!(
@@ -874,10 +877,7 @@ struct BrewBottleFile {
 /// `<root>/vendor-lib/`. Best-effort: a formula that can't be fetched is
 /// logged and skipped rather than failing the whole install.
 #[cfg(target_os = "macos")]
-async fn vendor_homebrew_dylibs(
-    root: &Path,
-    http: &dyn crate::effects::HttpFetcher,
-) -> Result<()> {
+async fn vendor_homebrew_dylibs(root: &Path, http: &dyn crate::effects::HttpFetcher) -> Result<()> {
     let mut queue: Vec<String> = collect_homebrew_formulae(root).into_iter().collect();
     if queue.is_empty() {
         return Ok(());
@@ -1017,7 +1017,10 @@ async fn fetch_and_extract_bottle(
         h.update(&bytes);
         let got = hex::encode(h.finalize());
         if got != file.sha256 {
-            bail!("sha256 mismatch for {formula} bottle (got {got}, want {})", file.sha256);
+            bail!(
+                "sha256 mismatch for {formula} bottle (got {got}, want {})",
+                file.sha256
+            );
         }
     }
 
