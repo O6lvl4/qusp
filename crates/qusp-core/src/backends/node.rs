@@ -93,6 +93,14 @@ struct NpmPackument {
     dist: NpmDist,
     #[serde(default)]
     bin: serde_json::Value,
+    /// Native CLIs (TypeScript 7, esbuild, biome, …) ship their binary as
+    /// one optional dependency per platform.
+    #[serde(default, rename = "optionalDependencies")]
+    optional_dependencies: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    os: Vec<String>,
+    #[serde(default)]
+    cpu: Vec<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -327,6 +335,7 @@ impl Backend for NodeBackend {
 
         // npm tarballs always extract to a top-level `package/` dir.
         let pkg_dir = store_dir.join("package");
+        install_platform_deps(http, &pkg_dir, &p.optional_dependencies).await?;
         let bin_path = resolve_bin(&pkg_dir, &p.bin, &resolved.name, &resolved.package)?;
         // Some tarballs ship bin scripts without the executable bit.
         #[cfg(unix)]
@@ -370,6 +379,89 @@ impl Backend for NodeBackend {
             FarmBinary::unversioned("corepack"),
         ]
     }
+}
+
+/// npm's `(os, cpu)` names for this machine (`process.platform`, `process.arch`).
+fn npm_platform() -> Option<(&'static str, &'static str)> {
+    let (os, arch) = common::os_arch();
+    let os = match os {
+        "macos" => "darwin",
+        "linux" => "linux",
+        "windows" => "win32",
+        _ => return None,
+    };
+    let cpu = match arch {
+        "aarch64" => "arm64",
+        "x86_64" => "x64",
+        _ => return None,
+    };
+    Some((os, cpu))
+}
+
+/// Optional deps whose name carries this platform (`…-darwin-arm64`,
+/// `@esbuild/darwin-arm64`). The packument's `os`/`cpu` has the final say.
+fn platform_dep_candidates<'a>(
+    optional: &'a std::collections::BTreeMap<String, String>,
+    os: &str,
+    cpu: &str,
+) -> Vec<(&'a String, &'a String)> {
+    let tag = format!("{os}-{cpu}");
+    optional
+        .iter()
+        .filter(|(name, _)| {
+            name.ends_with(&format!("-{tag}")) || name.ends_with(&format!("/{tag}"))
+        })
+        .collect()
+}
+
+/// Install the optional dependency that carries this platform's native
+/// binary into `<pkg_dir>/node_modules/<name>`, the way npm would. Without
+/// it, wrappers like TypeScript 7's `tsc` fail with "Unable to resolve
+/// @typescript/typescript-darwin-arm64". Each tarball is integrity-checked.
+async fn install_platform_deps(
+    http: &dyn crate::effects::HttpFetcher,
+    pkg_dir: &Path,
+    optional: &std::collections::BTreeMap<String, String>,
+) -> Result<()> {
+    let Some((os, cpu)) = npm_platform() else {
+        return Ok(());
+    };
+    for (name, version) in platform_dep_candidates(optional, os, cpu) {
+        let dest = pkg_dir.join("node_modules").join(name);
+        if dest.join("package.json").is_file() {
+            continue;
+        }
+        let url = format!("{NPM_REGISTRY}/{name}/{version}");
+        let body = http
+            .get_text(&url)
+            .await
+            .with_context(|| format!("fetch {url}"))?;
+        let dep: NpmPackument = serde_json::from_str(&body)
+            .with_context(|| format!("parse npm packument for {name}"))?;
+        let os_ok = dep.os.is_empty() || dep.os.iter().any(|o| o == os);
+        let cpu_ok = dep.cpu.is_empty() || dep.cpu.iter().any(|c| c == cpu);
+        if !(os_ok && cpu_ok) {
+            continue;
+        }
+        let bytes = http
+            .get_bytes(&dep.dist.tarball)
+            .await
+            .with_context(|| format!("download {}", dep.dist.tarball))?;
+        verify_npm_integrity(&dep.dist.integrity, &bytes)
+            .with_context(|| format!("integrity check failed for {name}"))?;
+
+        let staging = pkg_dir.join(".qusp-dep-staging");
+        let _ = std::fs::remove_dir_all(&staging);
+        anyv_core::paths::ensure_dir(&staging)?;
+        let tgz = staging.join("dep.tgz");
+        std::fs::write(&tgz, &bytes)?;
+        extract_archive(&tgz, &staging)?;
+        anyv_core::paths::ensure_dir(dest.parent().unwrap_or(pkg_dir))?;
+        std::fs::rename(staging.join("package"), &dest)
+            .with_context(|| format!("place {name} into {}", dest.display()))?;
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    Ok(())
 }
 
 fn pick_bin(bin: &serde_json::Value, tool_name: &str, pkg: &str) -> Option<String> {
@@ -463,4 +555,34 @@ fn integrity_hex_prefix(integrity: &str) -> Option<String> {
     let (_, b64) = integrity.split_whitespace().next()?.split_once('-')?;
     let bytes = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
     Some(hex::encode(&bytes[..8.min(bytes.len())]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn platform_dep_candidates_match_scoped_and_suffixed_names() {
+        let optional: std::collections::BTreeMap<String, String> = [
+            ("@typescript/typescript-darwin-arm64", "7.0.2"),
+            ("@typescript/typescript-darwin-x64", "7.0.2"),
+            ("@typescript/typescript-linux-arm64", "7.0.2"),
+            ("@esbuild/darwin-arm64", "0.25.0"),
+            ("fsevents", "2.3.3"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let got: Vec<&str> = platform_dep_candidates(&optional, "darwin", "arm64")
+            .into_iter()
+            .map(|(n, _)| n.as_str())
+            .collect();
+        assert_eq!(
+            got,
+            [
+                "@esbuild/darwin-arm64",
+                "@typescript/typescript-darwin-arm64"
+            ]
+        );
+    }
 }
