@@ -36,13 +36,11 @@ traps the human catches:
 After deciding, hand-edit **both**:
 
 ```
-crates/qusp-cli/src/script.rs  →  fn default_version
-crates/qusp-cli/src/main.rs    →  cmd_init template (duplicated map, x2)
+crates/qusp-cli/src/script.rs     →  const DEFAULT_VERSIONS
+crates/qusp-cli/src/cmd/admin.rs  →  const DEFAULT_VERSIONS (duplicate)
 ```
 
-(Keeping these two in sync is unavoidable until they're refactored —
-which has explicitly been deferred since both want to be `const`-able
-and Rust doesn't let const fns alloc strings.)
+(The drift script refuses to run if the two tables differ.)
 
 Then:
 
@@ -110,6 +108,6 @@ real users to confirm).
   user once too often elsewhere.
 - **e2e fast before tag** — full e2e takes ~15 min; tag without it
   has shipped twice with broken backends in this codebase already.
-- **Two version maps to update** — script.rs (`default_version`) +
-  main.rs (`cmd_init`'s template) — `cargo check` won't catch the
-  drift, only `qusp init --langs=X` smoke would.
+- **Two version maps to update** — `DEFAULT_VERSIONS` in script.rs +
+  cmd/admin.rs — `cargo check` won't catch a mismatch; the drift
+  script does.

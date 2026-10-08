@@ -2,9 +2,9 @@
 """
 refresh_default_versions.py — release-prep drift report.
 
-Compares the static `default_version` table in
-`crates/qusp-cli/src/script.rs` (and the duplicated map in
-`crates/qusp-cli/src/main.rs::cmd_init`) against the **current
+Compares the static `DEFAULT_VERSIONS` table in
+`crates/qusp-cli/src/script.rs` (and its duplicate in
+`crates/qusp-cli/src/cmd/admin.rs`) against the **current
 upstream "latest stable"** for each backend, as reported by
 `qusp list <lang> --remote --output-format json`.
 
@@ -36,6 +36,7 @@ is fragile. Surface the data, let the human decide.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -43,7 +44,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT_RS = REPO / "crates/qusp-cli/src/script.rs"
-MAIN_RS = REPO / "crates/qusp-cli/src/main.rs"
+ADMIN_RS = REPO / "crates/qusp-cli/src/cmd/admin.rs"
 QUSP = REPO / "target/release/qusp"
 
 # Per-language hint about how to filter list_remote for a sensible
@@ -69,45 +70,13 @@ class Backend:
     error: str | None = None
 
 
-def extract_default_version_table() -> dict[str, str]:
-    """Parse the `default_version` fn body from script.rs."""
-    text = SCRIPT_RS.read_text()
-    # Find the default_version function and read until its closing brace.
-    idx = text.find("pub fn default_version")
-    if idx < 0:
-        raise RuntimeError("default_version fn not found in script.rs")
-    body_start = text.find("{", idx)
-    if body_start < 0:
-        raise RuntimeError("could not find body of default_version")
-    # Walk forward, balance braces.
-    depth = 0
-    end = body_start
-    for i, ch in enumerate(text[body_start:], start=body_start):
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                end = i
-                break
-    body = text[body_start : end + 1]
-    out: dict[str, str] = {}
-    # Lines like:  "go" => "1.26.2",
-    for line in body.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith('"'):
-            continue
-        if "=>" not in stripped:
-            continue
-        try:
-            key_part, val_part = stripped.split("=>", 1)
-            key = key_part.strip().strip('"').strip()
-            val = val_part.strip().rstrip(",").strip().strip('"').strip()
-            if key and val and not val.startswith("return"):
-                out[key] = val
-        except ValueError:
-            continue
-    return out
+def extract_default_version_table(path: Path = SCRIPT_RS) -> dict[str, str]:
+    """Parse the `DEFAULT_VERSIONS: &[(&str, &str)]` const from a Rust file."""
+    text = path.read_text()
+    m = re.search(r"const DEFAULT_VERSIONS: &\[\(&str, &str\)\] = &\[(.*?)\];", text, re.S)
+    if not m:
+        raise RuntimeError(f"DEFAULT_VERSIONS not found in {path.relative_to(REPO)}")
+    return dict(re.findall(r'\("([^"]+)",\s*"([^"]+)"\)', m.group(1)))
 
 
 def fetch_remote_top(lang: str, n: int = 5) -> tuple[list[str], str | None]:
@@ -150,7 +119,7 @@ def render_report(backends: list[Backend]) -> None:
     print("=" * 72)
     print(
         f"static table: {SCRIPT_RS.relative_to(REPO)}\n"
-        f"            + {MAIN_RS.relative_to(REPO)} (cmd_init duplicated map)\n"
+        f"            + {ADMIN_RS.relative_to(REPO)} (duplicate, must match)\n"
     )
 
     if drift:
@@ -189,8 +158,8 @@ def render_report(backends: list[Backend]) -> None:
     )
     if drift:
         print(
-            "next: review hints above, hand-edit `default_version` and the\n"
-            "      `cmd_init` map, then `cargo test --release` before tag."
+            "next: review hints above, hand-edit `DEFAULT_VERSIONS` in both\n"
+            "      script.rs and cmd/admin.rs, then `cargo test --release` before tag."
         )
     print("=" * 72)
 
@@ -206,6 +175,13 @@ def main() -> int:
     table = extract_default_version_table()
     if not table:
         print("error: extracted default_version table is empty", file=sys.stderr)
+        return 2
+    if (dup := extract_default_version_table(ADMIN_RS)) != table:
+        print(
+            f"error: DEFAULT_VERSIONS differs between {SCRIPT_RS.relative_to(REPO)} "
+            f"and {ADMIN_RS.relative_to(REPO)}",
+            file=sys.stderr,
+        )
         return 2
     backends: list[Backend] = []
     for lang in sorted(table.keys()):
